@@ -12,6 +12,8 @@ syn <- synDownloader(here("tempdl"), followLink = TRUE)
 wd <- here("clustering", "linear_model_clustering")
 dir.create(wd, recursive = TRUE, showWarnings = FALSE)
 
+syn_lm_clusters <- "syn21448567"
+
 # set directories, import files ------------------------------------------------
 ###############################################################################T
 
@@ -346,3 +348,24 @@ mclust_fit <-  Mclust(
 )
 
 plot(mclust_fit, what = "classification")
+
+# Store to synapse -------------------------------------------------------------
+###############################################################################T
+
+
+lm_clustering_activity <- Activity(
+  "Clustering ERK response genes based on their expression profile with increasing ERK concentration",
+  used = c(
+    "syn21432183",
+    "syn21432975",
+    "syn21444456",
+    "syn21444486"
+  ),
+  executed = "https://github.com/clemenshug/erk_senescence/blob/master/analysis/lm_clusters.R"
+)
+
+c(
+  file.path(wd, "lm_clustering_classes.csv")
+) %>%
+  synStoreMany(syn_lm_clusters, activity = lm_clustering_activity)
+
