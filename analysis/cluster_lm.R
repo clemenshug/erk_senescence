@@ -268,52 +268,210 @@ ggsave(
 # Fit different models to the entire range of ERK at once ----------------------
 ###############################################################################T
 
+estimate_asym_prior <- function(data) {
+  l <- lm(y ~ x, data = data)
+  coefs <- coef(l)
+  avg_diff <- mean((coefs[["x"]] * data[["x"]]) + coefs[["(Intercept)"]] - data[["y"]])
+  # browser()
+  c(
+    a = if_else(avg_diff > 0, 0.01, -0.01),
+    b = mean(data[["y"]]),
+    c = coefs[["(Intercept)"]]
+  )
+}
+
+
 erk_range_lfc_model_fit <- pc_lfc_long %>%
+  left_join(condition_meta, by = "condition") %>%
+  filter(Time == 24) %>%
   group_nest(gene_id, gene_name) %>%
   mutate(
-    linear_model = future_map(
+    # linear_model = map(
+    #   data,
+    #   ~lm(log2FoldChange ~ PC1, data = .x)
+    #   # .progress = TRUE
+    # ),
+    # quad_model =  map(
+    #   data,
+    #   ~lm(log2FoldChange ~ poly(PC1, 2), data = .x)
+    #   # .progress = TRUE
+    # ),
+    # exp_model = future_map(
+    #   data,
+    #   ~possibly(nls, NULL)(log2FoldChange ~ SSfpl(PC1, A, B, xmid, scal), data = .x),
+    #   .progress = TRUE
+    # )
+    linear_model = map(
       data,
-      ~lm(log2FoldChange ~ PC1, data = .x),
-      .progress = TRUE
+      ~possibly(nls, NULL)(log2FoldChange ~ a*PC1 + x0, data = .x, start = c(a = 1, x0 = 0))
+      # .progress = TRUE
     ),
-    quad_model = future_map(
+    quad_model =  map(
       data,
-      ~lm(log2FoldChange ~ poly(PC1, 2), data = .x),
-      .progress = TRUE
+      ~possibly(nls, NULL)(log2FoldChange ~ a * PC1**2 + b * PC1 + c, data = .x, start = c(a = 1, b = 1, c = 0))
+      # .progress = TRUE
     ),
-    exp_model = future_map(
+    asymptotic_model = map(
       data,
-      ~possibly(nls, NULL)(log2FoldChange ~ SSfpl(PC1, A, B, xmid, scal), data = .x),
-      .progress = TRUE
+      function(d) {
+        # browser()
+        nls(log2FoldChange ~ aomisc::NLS.asymReg(PC1, init, m, plateau), data = d)
+      }
+      # .progress = TRUE
+    )
+    # asymptotic_model = map(
+    #   data,
+    #   function(d) {
+    #     # browser()
+    #     possibly(nls, NULL)(log2FoldChange ~ b - ((b - c) * exp(-a * PC1)), data = d, start = estimate_asym_prior(tibble(x = d$PC1, y = d$log2FoldChange)))
+    #   }
+    #   # .progress = TRUE
+    # )
+    # asymptotic_model2 = map(
+    #   data,
+    #   function(d) {
+    #     library(aomisc)
+    #     library(drc)
+    #     drm(log2FoldChange ~ PC1, fct = DRC.asymReg(), data = d)
+    #   }
+    #   # .progress = TRUE
+    # )
+  ) %>%
+  gather("model", "model_object", ends_with("_model"))
+%>%
+  mutate(
+    aic = map_dbl(model_object, possibly(AIC, NA_real_), k = log(12)),
+    model_df = map(model_object, possibly(broom::tidy,  NULL)),
+    coefs = map(model_object, coef),
+    # p = map_dbl(
+    #   coefs,
+    #   ~if_else(
+    #     is.null(.x),
+    #     NA_real_,
+    #     psych::harmonic.mean(filter(.x, !term %in% c("c", "b", "x0", "R0", "Asym"))$p.value)
+    #   )
+    # ),
+    p = map2_dbl(
+      model_df, model,
+      function(co, m) {
+        if (is.null(co) || nrow(co) == 0)
+          return(NA_real_)
+        co %>%
+          filter(term %in% c("a")) %>%
+          chuck("p.value", 1)
+      }
+    ),
+    padj = p.adjust(p, method = "BH")
+  ) %>%
+  mutate(
+    data = pmap(
+      list(data, model, model_object),
+      function(d, m, mo) {
+        if (is.null(mo))
+          return(mutate(d, yfit = NA_real_))
+        c <- coef(mo)
+        switch(
+          m,
+          linear_model = d %>%
+            mutate(yfit = c[["a"]] * PC1 + c[["x0"]]),
+          quad_model = d %>%
+            mutate(yfit = c[["a"]] * PC1**2 + c[["b"]] * PC1 + c[["c"]]),
+          asymptotic_model = d %>%
+            mutate(yfit = c[["b"]] - ((c[["b"]] - c[["c"]]) * exp(-c[["a"]] * PC1)))
+        )
+      }
     )
   )
 
-erk_range_lfc_model_fit_aic <- erk_range_lfc_model_fit %>%
-  mutate_at(vars(ends_with("_model")), map_dbl, possibly(AIC, NA_real_), k = log(12))
 
-erk_range_lfc_model_fit_aic_best_fit <- erk_range_lfc_model_fit_aic %>%
-  select(-data) %>%
-  gather("model", "aic", -starts_with("gene_")) %>%
+erk_range_lfc_model_fit_plotting <- erk_range_lfc_model_fit %>%
+  mutate(
+    coef_str = map_chr(
+      model_df,
+      function(d) {
+        if (is.null(d) || !is.numeric(d$estimate))
+          return("")
+        paste(
+          d$term,
+          formatC(signif(d$estimate, digits = 2), digits = 2, format="fg", flag="#"),
+          formatC(d$p.value, digits = 2, format="e"),
+          sep = " ", collapse = "\n"
+        )
+      }
+    )
+  )
+
+
+erk_range_lfc_model_best_fit_aic <- erk_range_lfc_model_fit %>%
+  drop_na(aic) %>%
   group_by(gene_id, gene_name) %>%
-  arrange(aic) %>%
-  summarize(model = head(model, 1)) %>%
+  arrange(aic, .by_group = TRUE) %>%
+  slice(1) %>%
   ungroup()
 
+erk_range_lfc_model_best_fit_p <- erk_range_lfc_model_fit %>%
+  drop_na(p) %>%
+  filter(padj < 0.05) %>%
+  group_by(gene_id, gene_name) %>%
+  arrange(p, .by_group = TRUE) %>%
+  slice(1) %>%
+  ungroup()
+
+erk_range_lfc_model_best_fit_aic %>%
+  count(model)
 
 set.seed(42)
 pc_vs_lfc_plot_grid(
-  pc_lfc_long %>%
+  erk_range_lfc_model_fit_plotting %>%
+    dplyr::select(gene_name, gene_id, data, model, coef_str) %>%
+    semi_join(erk_range_lfc_model_best_fit_p, by = c("gene_id", "gene_name", "model")) %>%
+    unnest(data) %>%
     arrange(PC1) %>%
-    inner_join(erk_range_lfc_model_fit_aic_best_fit, by = c("gene_id", "gene_name")) %>%
+    filter(Time == 24) %>%
     mutate(PC_value = PC1) %>%
     # inner_join(erk_range_lfc_classes, by = c("gene_id", "gene_name")) %>%
     mutate(wrapping = paste(model, gene_name, sep = "_")),
-  erk_range_lfc_model_fit_aic_best_fit %>%
+  erk_range_lfc_model_best_fit_p %>%
     group_by(model) %>%
-    group_modify(~sample_n(.x, 10)) %>%
+    group_modify(~sample_n(.x, 10, replace = TRUE)) %>%
     pull(gene_id),
-  extra_layers = list(theme_minimal(), scale_color_viridis_c(), facet_wrap(vars(wrapping), scales = "free_y"))
+  # erk_range_lfc_model_best_fit_p %>%
+  #   filter(padj > 0.05) %>%
+  #   pull(gene_id),
+  extra_layers = list(
+    theme_minimal(),
+    scale_color_viridis_c(),
+    facet_wrap(vars(wrapping), scales = "free_y"),
+    geom_line(aes(y = yfit), color = "black"),
+    geom_text(aes(label =  coef_str), color = "black", x = -Inf, y = Inf, hjust = 0, vjust = 1)
+  )
 )
+
+classify_full_range <- function(model, coefs) {
+  if (model == "linear_model") {
+    class <- "full_range"
+    direction <- if_else(coefs[["a"]] > 0, "+", "-")
+  } else if (model == "quad_model") {
+    zc <- -coefs[["b"]] / (2 * coefs[["a"]])
+    direction <- if_else(coefs[["a"]] > 0, "-", "+")
+    if (abs(zc) < 25) {
+      class <- "bell"
+
+    }
+    else {
+      class <- if_else(zc > 25, "low_erk", "high_erk")
+    }
+  } else if (model == "asymptotic_model") {
+
+  }
+}
+
+full_range_clustering_classes <- erk_range_lfc_model_best_fit_p %>%
+  mutate(
+    class = case_when(
+      model == "linear_model" & map_chr(coefs, "a") > 0 ~ ""
+    )
+  )
 
 
 # Do thresholding on moderated slope estimates using ashr ----------------------
