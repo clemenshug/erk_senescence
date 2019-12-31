@@ -271,12 +271,16 @@ ggsave(
 estimate_asym_prior <- function(data) {
   l <- lm(y ~ x, data = data)
   coefs <- coef(l)
-  avg_diff <- mean((coefs[["x"]] * data[["x"]]) + coefs[["(Intercept)"]] - data[["y"]])
+  data <- mutate(data, diffs = residuals(l))
+  diffs_poly <- lm(diffs ~ poly(x, 2), data = data)
+  coefs_poly <- coef(diffs_poly)
+  asym <- if_else(coefs_poly[[3]] > 0, min(data[["y"]]), max(data[["y"]]))
+  l_abs_log <- lm(labs_y ~ x, data = mutate(data, labs_y = log(abs(y - asym) + 1)))
   # browser()
   c(
-    a = if_else(avg_diff > 0, 0.01, -0.01),
-    b = mean(data[["y"]]),
-    c = coefs[["(Intercept)"]]
+    a = coef(l_abs_log)[[2]],
+    b = asym,
+    c = if_else(coefs_poly[[3]] > 0, min(data[["y"]]) + .1, max(data[["y"]]) - 0.1)
   )
 }
 
@@ -311,14 +315,14 @@ erk_range_lfc_model_fit <- pc_lfc_long %>%
       ~possibly(nls, NULL)(log2FoldChange ~ a * PC1**2 + b * PC1 + c, data = .x, start = c(a = 1, b = 1, c = 0))
       # .progress = TRUE
     ),
-    asymptotic_model = map(
-      data,
-      function(d) {
-        # browser()
-        nls(log2FoldChange ~ aomisc::NLS.asymReg(PC1, init, m, plateau), data = d)
-      }
-      # .progress = TRUE
-    )
+    # asymptotic_model = map(
+    #   data,
+    #   function(d) {
+    #     # browser()
+    #     possibly(nls, NULL)(log2FoldChange ~ aomisc::NLS.asymReg(PC1, init, m, plateau), data = d)
+    #   }
+    #   # .progress = TRUE
+    # )
     # asymptotic_model = map(
     #   data,
     #   function(d) {
@@ -337,8 +341,7 @@ erk_range_lfc_model_fit <- pc_lfc_long %>%
     #   # .progress = TRUE
     # )
   ) %>%
-  gather("model", "model_object", ends_with("_model"))
-%>%
+  gather("model", "model_object", ends_with("_model")) %>%
   mutate(
     aic = map_dbl(model_object, possibly(AIC, NA_real_), k = log(12)),
     model_df = map(model_object, possibly(broom::tidy,  NULL)),
@@ -424,14 +427,14 @@ set.seed(42)
 pc_vs_lfc_plot_grid(
   erk_range_lfc_model_fit_plotting %>%
     dplyr::select(gene_name, gene_id, data, model, coef_str) %>%
-    semi_join(erk_range_lfc_model_best_fit_p, by = c("gene_id", "gene_name", "model")) %>%
+    semi_join(erk_range_lfc_model_best_fit_aic, by = c("gene_id", "gene_name", "model")) %>%
     unnest(data) %>%
     arrange(PC1) %>%
     filter(Time == 24) %>%
     mutate(PC_value = PC1) %>%
     # inner_join(erk_range_lfc_classes, by = c("gene_id", "gene_name")) %>%
     mutate(wrapping = paste(model, gene_name, sep = "_")),
-  erk_range_lfc_model_best_fit_p %>%
+  erk_range_lfc_model_best_fit_aic %>%
     group_by(model) %>%
     group_modify(~sample_n(.x, 10, replace = TRUE)) %>%
     pull(gene_id),
