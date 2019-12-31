@@ -284,21 +284,6 @@ estimate_asym_prior <- function(data) {
     b = co[["Asym"]],
     c = co[["R0"]]
   )
-  # if (fwd_f >= rev_f) {
-  #   co <- coef(fwd_model)
-  #   params <- c(
-  #     a = co[["lrc"]],
-  #     b = co[["Asym"]],
-  #     c = co[["R0"]]
-  #   )
-  # } else {
-  #   co <- coef(rev_model)
-  #   params <- c(
-  #     a = co[["lrc"]],
-  #     b = co[["Asym"]],
-  #     c = co[["R0"]]
-  #   )
-  # }
 }
 
 
@@ -307,81 +292,34 @@ erk_range_lfc_model_fit <- pc_lfc_long %>%
   filter(Time == 24) %>%
   group_nest(gene_id, gene_name) %>%
   mutate(
-    # linear_model = map(
-    #   data,
-    #   ~lm(log2FoldChange ~ PC1, data = .x)
-    #   # .progress = TRUE
-    # ),
-    # quad_model =  map(
-    #   data,
-    #   ~lm(log2FoldChange ~ poly(PC1, 2), data = .x)
-    #   # .progress = TRUE
-    # ),
-    # exp_model = future_map(
-    #   data,
-    #   ~possibly(nls, NULL)(log2FoldChange ~ SSfpl(PC1, A, B, xmid, scal), data = .x),
-    #   .progress = TRUE
-    # )
     linear_model = map(
       data,
       ~possibly(nls, NULL)(log2FoldChange ~ a*PC1 + x0, data = .x, start = c(a = 1, x0 = 0))
-      # .progress = TRUE
     ),
     quad_model =  map(
       data,
       ~possibly(nls, NULL)(log2FoldChange ~ a * PC1**2 + b * PC1 + c, data = .x, start = c(a = 1, b = 1, c = 0))
-      # .progress = TRUE
     ),
-    # asymptotic_model = map(
-    #   data,
-    #   function(d) {
-    #     # browser()
-    #     possibly(nls, NULL)(log2FoldChange ~ aomisc::NLS.asymReg(PC1, init, m, plateau), data = d)
-    #   }
-    #   # .progress = TRUE
-    # )
     asymptotic_model = map(
       data,
       function(d) {
-        # browser()
         possibly(nls, NULL)(log2FoldChange ~ b - ((b - c) * exp(-a * PC1)), data = d, start = estimate_asym_prior(tibble(x = d$PC1, y = d$log2FoldChange)))
       }
-      # .progress = TRUE
     )
-    # asymptotic_model2 = map(
-    #   data,
-    #   function(d) {
-    #     library(aomisc)
-    #     library(drc)
-    #     drm(log2FoldChange ~ PC1, fct = DRC.asymReg(), data = d)
-    #   }
-    #   # .progress = TRUE
-    # )
   ) %>%
   gather("model", "model_object", ends_with("_model")) %>%
   mutate(
     aic = map_dbl(model_object, possibly(AIC, NA_real_), k = log(12)),
     model_df = map(model_object, possibly(broom::tidy,  NULL)),
     coefs = map(model_object, coef),
-    # p = map_dbl(
-    #   coefs,
-    #   ~if_else(
-    #     is.null(.x),
-    #     NA_real_,
-    #     psych::harmonic.mean(filter(.x, !term %in% c("c", "b", "x0", "R0", "Asym"))$p.value)
-    #   )
-    # ),
-    p = map2_dbl(
-      model_df, model,
-      function(co, m) {
-        if (is.null(co) || nrow(co) == 0)
-          return(NA_real_)
-        co %>%
-          filter(term %in% c("a")) %>%
-          chuck("p.value", 1)
-      }
-    ),
-    padj = p.adjust(p, method = "BH")
+    mse = map_dbl(
+      model_object,
+      ~.x %>%
+        summary() %>%
+        pluck("residuals", .default = NA) %>%
+        magrittr::raise_to_power(2) %>%
+        mean()
+    )
   ) %>%
   mutate(
     data = pmap(
@@ -400,6 +338,10 @@ erk_range_lfc_model_fit <- pc_lfc_long %>%
             mutate(yfit = c[["b"]] - ((c[["b"]] - c[["c"]]) * exp(-c[["a"]] * PC1)))
         )
       }
+    ),
+    norm_mse = map2_dbl(
+      data, mse,
+      ~.y/sd(.x$yfit)
     )
   )
 
@@ -425,6 +367,7 @@ erk_range_lfc_model_fit_plotting <- erk_range_lfc_model_fit %>%
   )
 
 
+
 erk_range_lfc_model_best_fit_aic <- erk_range_lfc_model_fit %>%
   drop_na(aic) %>%
   group_by(gene_id, gene_name) %>%
@@ -432,45 +375,34 @@ erk_range_lfc_model_best_fit_aic <- erk_range_lfc_model_fit %>%
   slice(1) %>%
   ungroup()
 
-erk_range_lfc_model_best_fit_p <- erk_range_lfc_model_fit %>%
-  drop_na(p) %>%
-  filter(padj < 0.05) %>%
-  group_by(gene_id, gene_name) %>%
-  arrange(p, .by_group = TRUE) %>%
-  slice(1) %>%
-  ungroup()
+# Quality control the fits -----------------------------------------------------
+###############################################################################T
+
+
+erk_range_lfc_model_fit %>%
+  nest_join(erk_range_lfc_model_best_fit_aic, by = c("gene_name", "gene_id", "model")) %>%
+  mutate(best = map_chr(erk_range_lfc_model_best_fit_aic, ~if_else(nrow(.x) > 0, "best", "other"))) %>%
+  ggplot(aes(model, norm_mse, fill = best)) +
+    geom_violin(alpha = 0.8, draw_quantiles = c(.05, .5, .95)) +
+    scale_y_log10()
+    # facet_wrap(vars(model))
+
 
 erk_range_lfc_model_best_fit_aic %>%
   count(model)
 
-set.seed(42)
-pc_vs_lfc_plot_grid(
-  erk_range_lfc_model_fit_plotting %>%
-    dplyr::select(gene_name, gene_id, data, model, coef_str) %>%
-    semi_join(erk_range_lfc_model_best_fit_aic, by = c("gene_id", "gene_name", "model")) %>%
-    unnest(data) %>%
-    arrange(PC1) %>%
-    filter(Time == 24) %>%
-    mutate(PC_value = PC1) %>%
-    # inner_join(erk_range_lfc_classes, by = c("gene_id", "gene_name")) %>%
-    mutate(wrapping = paste(model, gene_name, sep = "_")),
-  erk_range_lfc_model_best_fit_aic %>%
-    group_by(model) %>%
-    group_modify(~sample_n(.x, 10, replace = TRUE)) %>%
-    pull(gene_id),
-  # erk_range_lfc_model_best_fit_p %>%
-  #   filter(padj > 0.05) %>%
-  #   pull(gene_id),
-  extra_layers = list(
-    theme_minimal(),
-    scale_color_viridis_c(),
-    facet_wrap(vars(wrapping), scales = "free_y"),
-    geom_line(aes(y = yfit), color = "black"),
-    geom_text(aes(label =  coef_str), color = "black", x = -Inf, y = Inf, hjust = 0, vjust = 1)
-  )
-)
+# Divide genes by their function fit into different classes --------------------
+###############################################################################T
 
-classify_full_range <- function(model, coefs, data) {
+classify_full_range <- function(model, coefs, data, norm_mse) {
+  if (norm_mse > 0.3) {
+    return(
+      c(
+        class = "no_response",
+        direction = "0"
+      )
+    )
+  }
   x_ranges <- quantile(data$PC1, c(0, .25, .75, 1), names = FALSE)
   y_ranges <- quantile(data$log2FoldChange, c(0, .25, .75, 1), names = FALSE)
   if (model == "linear_model") {
@@ -516,18 +448,23 @@ classify_full_range <- function(model, coefs, data) {
 full_range_clustering_classes <- erk_range_lfc_model_best_fit_aic %>%
   mutate(
     class = pmap(
-      list(model, coefs, data),
+      list(model, coefs, data, norm_mse),
       classify_full_range
     )
   ) %>%
-  unnest_wider(class)
+  unnest_wider(class) %>%
+  mutate(class_combined = paste(class, direction, sep = "_"))
 
 full_range_clustering_classes %>%
   count(class, direction)
 
 
+# Plot example members and average cluster profile -----------------------------
+###############################################################################T
+
+
 set.seed(42)
-full_range_clusteringpc_vs_lfc_plot_grid(
+function_clustering_example_traces <- pc_vs_lfc_plot_grid(
   erk_range_lfc_model_fit_plotting %>%
     dplyr::select(gene_name, gene_id, data, model, coef_str) %>%
     unnest(data) %>%
@@ -553,42 +490,35 @@ full_range_clusteringpc_vs_lfc_plot_grid(
   )
 )
 ggsave(
-  file.path(wd, "lm_clustering_example_traces.pdf"),
-  lm_cluster_example_traces, height = 8, width = 12
+  file.path(wd, "function_clustering_example_traces.pdf"),
+  function_clustering_example_traces, height = 14, width = 20
 )
 
-# Do thresholding on moderated slope estimates using ashr ----------------------
-###############################################################################T
-
-adjusted_effect_cutoff <- 0.01
-
-erk_range_lfc_fit_ashr <- erk_range_lfc_fit %>%
-  bind_cols(
-    with(
-      .,
-      ashr::ash(estimate, std.error, df = 4, mixcompdist = "uniform", method = "fdr")$result
-    )
-  ) %>%
-  mutate(
-    class = cut(PosteriorMean, c(-Inf, -adjusted_effect_cutoff, adjusted_effect_cutoff, +Inf), labels = c("-", "0", "+"))
-  )
-
-# Clustering genes based on slopes for low and high ERK ------------------------
-###############################################################################T
-
-library(mclust)
-
-clPairs(select(erk_range_lfc_fit_wide, -starts_with("gene")))
-
-mclust_bic <- mclustBIC(select(erk_range_lfc_fit_wide, -starts_with("gene")))
-
-
-mclust_fit <-  Mclust(
-  select(erk_range_lfc_fit_wide, -starts_with("gene")),
-  G = 8, modelNames = "VVE"
+function_cluster_averages <- plot_cluster_trajectories(
+  pc_lfc_long %>%
+    group_by(gene_id) %>%
+    mutate_at(vars(log2FoldChange), scale, scale = TRUE, center = TRUE) %>%
+    ungroup() %>%
+    inner_join(full_range_clustering_classes, by = c("gene_id", "gene_name")) %>%
+    arrange(PC1) %>%
+    left_join(condition_meta, by = "condition") %>%
+    filter(Time == 24) %>%
+    mutate(PC1_order = PC1) %>%
+    gather("PC", "PC_value", PC1, PC2),
+  PC_value, log2FoldChange, condition, PC1_order, gene_id, PC, class_combined,
+  all_traces = TRUE
+)
+ggsave(
+  file.path(wd, "function_clustering_average_traces.pdf"),
+  function_cluster_averages, height = 10, width = 3
 )
 
-plot(mclust_fit, what = "classification")
+write_csv(
+  full_range_clustering_classes %>%
+    dplyr::select(gene_id, gene_name, class, direction, class_combined),
+  file.path(wd, "function_clustering_classes.csv")
+)
+
 
 # Store to synapse -------------------------------------------------------------
 ###############################################################################T
@@ -606,7 +536,8 @@ lm_clustering_activity <- Activity(
 )
 
 c(
-  file.path(wd, "lm_clustering_classes.csv")
+  file.path(wd, "lm_clustering_classes.csv"),
+  file.path(wd, "function_clustering_classes.csv")
 ) %>%
   synStoreMany(syn_lm_clusters, activity = lm_clustering_activity)
 
