@@ -5,6 +5,7 @@ library(synExtra)
 library(polynom)
 library(broom)
 library(furrr)
+library(rlang)
 
 synLogin()
 syn <- synDownloader(here("tempdl"), followLink = TRUE)
@@ -269,19 +270,35 @@ ggsave(
 ###############################################################################T
 
 estimate_asym_prior <- function(data) {
-  l <- lm(y ~ x, data = data)
-  coefs <- coef(l)
-  data <- mutate(data, diffs = residuals(l))
-  diffs_poly <- lm(diffs ~ poly(x, 2), data = data)
-  coefs_poly <- coef(diffs_poly)
-  asym <- if_else(coefs_poly[[3]] > 0, min(data[["y"]]), max(data[["y"]]))
-  l_abs_log <- lm(labs_y ~ x, data = mutate(data, labs_y = log(abs(y - asym) + 1)))
+  fwd_model <- possibly(nls, NULL)(y ~ SSasymp(x, Asym, R0, lrc), data = data)
+  rev_model <- possibly(nls, NULL)(y ~ SSasymp(x, Asym, R0, lrc), data = mutate(data, x = -x))
+  fwd_s <- summary(fwd_model)
+  rev_s <- summary(rev_model)
   # browser()
+  fwd_p <- if (!is.null(fwd_model)) fwd_s$parameters[, "Pr(>|t|)"]["lrc"] else Inf
+  rev_p <- if (!is.null(rev_model)) rev_s$parameters[, "Pr(>|t|)"]["lrc"] else Inf
+  better_model <- if (fwd_p <= rev_p) fwd_model else rev_model
+  co <- coef(better_model)
   c(
-    a = coef(l_abs_log)[[2]],
-    b = asym,
-    c = if_else(coefs_poly[[3]] > 0, min(data[["y"]]) + .1, max(data[["y"]]) - 0.1)
+    a = (if (fwd_p <= rev_p) 1 else -1) * exp(co[["lrc"]]),
+    b = co[["Asym"]],
+    c = co[["R0"]]
   )
+  # if (fwd_f >= rev_f) {
+  #   co <- coef(fwd_model)
+  #   params <- c(
+  #     a = co[["lrc"]],
+  #     b = co[["Asym"]],
+  #     c = co[["R0"]]
+  #   )
+  # } else {
+  #   co <- coef(rev_model)
+  #   params <- c(
+  #     a = co[["lrc"]],
+  #     b = co[["Asym"]],
+  #     c = co[["R0"]]
+  #   )
+  # }
 }
 
 
@@ -323,14 +340,14 @@ erk_range_lfc_model_fit <- pc_lfc_long %>%
     #   }
     #   # .progress = TRUE
     # )
-    # asymptotic_model = map(
-    #   data,
-    #   function(d) {
-    #     # browser()
-    #     possibly(nls, NULL)(log2FoldChange ~ b - ((b - c) * exp(-a * PC1)), data = d, start = estimate_asym_prior(tibble(x = d$PC1, y = d$log2FoldChange)))
-    #   }
-    #   # .progress = TRUE
-    # )
+    asymptotic_model = map(
+      data,
+      function(d) {
+        # browser()
+        possibly(nls, NULL)(log2FoldChange ~ b - ((b - c) * exp(-a * PC1)), data = d, start = estimate_asym_prior(tibble(x = d$PC1, y = d$log2FoldChange)))
+      }
+      # .progress = TRUE
+    )
     # asymptotic_model2 = map(
     #   data,
     #   function(d) {
@@ -389,16 +406,19 @@ erk_range_lfc_model_fit <- pc_lfc_long %>%
 
 erk_range_lfc_model_fit_plotting <- erk_range_lfc_model_fit %>%
   mutate(
-    coef_str = map_chr(
-      model_df,
-      function(d) {
+    coef_str = map2_chr(
+      model_df, model,
+      function(d, m) {
         if (is.null(d) || !is.numeric(d$estimate))
           return("")
-        paste(
-          d$term,
-          formatC(signif(d$estimate, digits = 2), digits = 2, format="fg", flag="#"),
-          formatC(d$p.value, digits = 2, format="e"),
-          sep = " ", collapse = "\n"
+        paste0(
+          m, "\n",
+          paste(
+            d$term,
+            formatC(signif(d$estimate, digits = 2), digits = 2, format="fg", flag="#"),
+            formatC(d$p.value, digits = 2, format="e"),
+            sep = " ", collapse = "\n"
+          )
         )
       }
     )
@@ -450,32 +470,92 @@ pc_vs_lfc_plot_grid(
   )
 )
 
-classify_full_range <- function(model, coefs) {
+classify_full_range <- function(model, coefs, data) {
+  x_ranges <- quantile(data$PC1, c(0, .25, .75, 1), names = FALSE)
+  y_ranges <- quantile(data$log2FoldChange, c(0, .25, .75, 1), names = FALSE)
   if (model == "linear_model") {
     class <- "full_range"
     direction <- if_else(coefs[["a"]] > 0, "+", "-")
   } else if (model == "quad_model") {
     zc <- -coefs[["b"]] / (2 * coefs[["a"]])
-    direction <- if_else(coefs[["a"]] > 0, "-", "+")
-    if (abs(zc) < 25) {
+    a_pos <- coefs[["a"]] > 0
+    if (zc >= x_ranges[2] && zc < x_ranges[3]) {
+      direction <- if_else(a_pos, "-", "+")
       class <- "bell"
-
+    }
+    else if (zc < x_ranges[1] || zc > x_ranges[4]) {
+      class <- "full_range"
+      direction <- if_else(xor(a_pos, zc > x_ranges[3]), "+", "-")
     }
     else {
-      class <- if_else(zc > 25, "low_erk", "high_erk")
+      class <- if_else(zc > x_ranges[3], "low_erk", "high_erk")
+      direction <- if_else(xor(a_pos, zc > x_ranges[3]), "+", "-")
     }
   } else if (model == "asymptotic_model") {
-
+    a_pos <- coefs[["a"]] > 0
+    c_g_b <- coefs[["c"]] > coefs[["b"]]
+    direction <- if_else(xor(a_pos, c_g_b), "+", "-")
+    # asymptote bottom
+    if (
+      (c_g_b && (coefs[["b"]] - min(data$yfit) < -0.3)) ||
+      (!c_g_b && (coefs[["b"]] - max(data$yfit) > 0.3))
+    ) {
+      class <- "full_range"
+    } else {
+      class <- if_else(a_pos, "low_erk", "high_erk")
+    }
+  } else {
+    stop("invalid model")
   }
+  c(
+    class = class,
+    direction = direction
+  )
 }
 
-full_range_clustering_classes <- erk_range_lfc_model_best_fit_p %>%
+full_range_clustering_classes <- erk_range_lfc_model_best_fit_aic %>%
   mutate(
-    class = case_when(
-      model == "linear_model" & map_chr(coefs, "a") > 0 ~ ""
+    class = pmap(
+      list(model, coefs, data),
+      classify_full_range
     )
-  )
+  ) %>%
+  unnest_wider(class)
 
+full_range_clustering_classes %>%
+  count(class, direction)
+
+
+set.seed(42)
+full_range_clusteringpc_vs_lfc_plot_grid(
+  erk_range_lfc_model_fit_plotting %>%
+    dplyr::select(gene_name, gene_id, data, model, coef_str) %>%
+    unnest(data) %>%
+    inner_join(dplyr::select(full_range_clustering_classes, gene_id, gene_name, model, class, direction), by = c("gene_id", "gene_name", "model")) %>%
+    arrange(PC1) %>%
+    filter(Time == 24) %>%
+    mutate(PC_value = PC1) %>%
+    # inner_join(erk_range_lfc_classes, by = c("gene_id", "gene_name")) %>%
+    mutate(wrapping = paste(class, direction, gene_name, sep = "_")),
+  full_range_clustering_classes %>%
+    group_by(class, direction) %>%
+    group_modify(~sample_n(.x, 5, replace = TRUE)) %>%
+    pull(gene_id),
+  # erk_range_lfc_model_best_fit_p %>%
+  #   filter(padj > 0.05) %>%
+  #   pull(gene_id),
+  extra_layers = list(
+    theme_minimal(),
+    scale_color_viridis_c(),
+    facet_wrap(vars(wrapping), scales = "free_y"),
+    geom_line(aes(y = yfit), color = "black"),
+    geom_text(aes(label =  coef_str), color = "black", x = -Inf, y = Inf, hjust = 0, vjust = 1)
+  )
+)
+ggsave(
+  file.path(wd, "lm_clustering_example_traces.pdf"),
+  lm_cluster_example_traces, height = 8, width = 12
+)
 
 # Do thresholding on moderated slope estimates using ashr ----------------------
 ###############################################################################T
