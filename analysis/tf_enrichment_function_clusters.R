@@ -3,6 +3,7 @@ library(here)
 library(synapser)
 library(synExtra)
 library(enrichR)
+library(enrichr.db)
 library(RColorBrewer)
 library(pheatmap)
 
@@ -25,6 +26,27 @@ surface_fit <- syn("syn21444486") %>%
 condition_meta <- meta %>%
   distinct(condition, ERKi, Time, DOX)
 
+# Aggregate ChEA TF data -------------------------------------------------------
+###############################################################################T
+
+chea_tfs <- enrichr.db::enrichr_terms %>%
+  filter(library == "ChEA_2016") %>%
+  chuck("data", 1) %>%
+  enframe("tf_info", "targets") %>%
+  mutate(
+    tf_info_split = str_split(tf_info, fixed("_")),
+    tf = map_chr(tf_info_split, 1),
+    species = map_chr(tf_info_split, tail, n = 1) %>%
+      str_to_lower()
+  ) %>%
+  filter(species %in% c("human", "mouse", "rat"))
+
+chea_tfs_agg <- chea_tfs %>%
+  group_by(tf) %>%
+  filter(if ("human" %in% species) species == "human" else TRUE) %>%
+  # summarize(targets = list(reduce(targets, union, .init = c()))) %>%
+  ungroup()
+
 # Find TF enrichment for each class --------------------------------------------
 ###############################################################################T
 
@@ -37,6 +59,8 @@ selected_tf_dbs <- c(
   "ChEA_2016"
   # "ARCHS4_TFs_Coexp"
 )
+
+
 
 enrichr_res_raw <- function_clusters %>%
   group_nest(class, direction, class_combined) %>%
@@ -56,6 +80,39 @@ enrichr_res <- enrichr_res_raw %>%
   ) %>%
   unnest(data) %>%
   mutate_at(vars(data), map, . %>% as_tibble %>% arrange(desc(Combined.Score)))
+
+# Aggregate ChEA result
+###############################################################################T
+
+
+
+enrichr_res_agg <- enrichr_res %>%
+  bind_rows(
+    enrichr_res %>%
+      filter(db == "ChEA_2016") %>%
+      mutate(
+        db = "ChEA_2016_agg",
+        data = map(
+          data,
+          function(data) {
+            data %>%
+              inner_join(chea_tfs_agg, by = c("Term" = "tf_info")) %>%
+              group_by(tf) %>%
+              summarize(
+                Adjusted.P.value = psych::harmonic.mean(Adjusted.P.value),
+                Combined.Score = median(Combined.Score)
+              ) %>%
+              ungroup() %>%
+              mutate(Term = tf)
+          }
+        )
+      )
+  )
+
+write_rds(
+  enrichr_res_agg,
+  file.path(wd, "enrichr_results_functional_clusters.rds")
+)
 
 # Plot TF enrichment as heatmap ------------------------------------------------
 ###############################################################################T
@@ -85,7 +142,7 @@ plot_heatmap <- function(mat, ...) {
 
 min_p_val <- 0.01
 
-enrichr_mats <- enrichr_res %>%
+enrichr_mats <- enrichr_res_agg %>%
   unnest(data) %>%
   group_nest(db) %>%
   mutate(
@@ -150,7 +207,29 @@ pwalk(
   function(db, plot, ...) {
     cowplot::ggsave2(
       file.path(wd, paste0("tf_enrichment_heatmap_top_10_per_class_", db, ".pdf")),
-      plot
+      plot,
+      width = 10, height = 14
     )
   }
 )
+
+# Store to synapse -------------------------------------------------------------
+###############################################################################T
+
+activity <- Activity(
+  "Enrichment of TF targets in functional clusters",
+  used = c(
+    "syn21478380",
+    "syn21432975",
+    "syn21444486"
+  ),
+  executed = "https://github.com/clemenshug/erk_senescence/blob/master/analysis/tf_enrichment_function_clusters.R"
+)
+
+syn_enrichr <- "syn21492378"
+
+c(
+  file.path(wd, "enrichr_results_functional_clusters.rds")
+) %>%
+  synStoreMany(syn_enrichr, activity = activity)
+
