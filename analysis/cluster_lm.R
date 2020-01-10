@@ -342,8 +342,15 @@ erk_range_lfc_model_fit <- pc_lfc_long %>%
     norm_mse = map2_dbl(
       data, mse,
       ~.y/sd(.x$yfit)
+      # ~.y/abs(max(.x$log2FoldChange) - min(.x$log2FoldChange))
     )
   )
+
+write_rds(
+  erk_range_lfc_model_fit,
+  file.path(wd, "function_model_fit.rds"),
+  compress = "gz"
+)
 
 
 erk_range_lfc_model_fit_plotting <- erk_range_lfc_model_fit %>%
@@ -351,7 +358,7 @@ erk_range_lfc_model_fit_plotting <- erk_range_lfc_model_fit %>%
     coef_str = map2_chr(
       model_df, model,
       function(d, m) {
-        if (is.null(d) || !is.numeric(d$estimate))
+        if (is.null(d) || is.null(m) || !is.numeric(d$estimate))
           return("")
         paste0(
           m, "\n",
@@ -390,6 +397,12 @@ erk_range_lfc_model_fit %>%
 
 erk_range_lfc_model_best_fit_aic %>%
   count(model)
+
+pca_values %>%
+  left_join(condition_meta, by = "condition") %>%
+  filter(Time == 24) %>%
+  pull(PC1) %>%
+  quantile(c(0, .25, .75, 1))
 
 # Divide genes by their function fit into different classes --------------------
 ###############################################################################T
@@ -456,8 +469,8 @@ full_range_clustering_classes <- erk_range_lfc_model_best_fit_aic %>%
   mutate(class_combined = paste(class, direction, sep = "_"))
 
 full_range_clustering_classes %>%
+  filter(gene_id %in% surface_fit$gene_id) %>%
   count(class, direction)
-
 
 # Plot example members and average cluster profile -----------------------------
 ###############################################################################T
