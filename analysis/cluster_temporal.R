@@ -2,6 +2,7 @@ library(tidyverse)
 library(here)
 library(synapser)
 library(synExtra)
+library(egg)
 
 synLogin()
 syn <- synDownloader(here("tempdl"), followLink = TRUE)
@@ -61,7 +62,7 @@ temporal_distance_per_cluster <- lfc_long_z %>%
       data,
       function(d) {
         n <- nrow(d)
-        mat <- matrix(NA_real_, n, n, dimnames = list(d$gene_name, d$gene_name))
+        mat <- matrix(NA_real_, n, n, dimnames = list(d$gene_id, d$gene_id))
         for (i in 1:n) {
           for (j in i:n) {
             mat[[j, i]] <- sqrt(sum((d[["data"]][[i]][["log2FoldChange"]] - d[["data"]][[j]][["log2FoldChange"]])**2))
@@ -72,7 +73,7 @@ temporal_distance_per_cluster <- lfc_long_z %>%
     )
   )
 
-temporal_clusters <- temporal_distance_per_cluster %>%
+temporal_clusters_hclust <- temporal_distance_per_cluster %>%
   mutate(
     data = map(
       data,
@@ -81,11 +82,12 @@ temporal_clusters <- temporal_distance_per_cluster %>%
     )
   )
 
-plot_single_surface <- function(d) {
-  abs_max <- quantile(abs(d$log2FoldChange), .95)
+plot_single_surface <- function(d, aesthetic = aes(ERKi, Time, fill = log2FoldChange)) {
+  fill_quo <- aesthetic[["fill"]]
+  abs_max <- quantile(abs(pull(d, !!fill_quo)), .95)
   d %>%
     mutate_at(vars(Time, ERKi), as.factor) %>%
-    ggplot(aes(ERKi, Time, fill = log2FoldChange)) +
+    ggplot(aesthetic) +
     geom_raster() +
     scale_fill_distiller(
       palette = "RdBu", limits = c(-abs_max, abs_max), oob = scales::squish
@@ -105,7 +107,7 @@ plot_single_line_by_erki <- function(d) {
     scale_color_brewer(palette = "Reds")
 }
 
-plot_single_line_by_erki(
+plot_single_surface(
   lfc_long %>%
     inner_join(condition_meta, by = "condition") %>%
     filter(gene_name == "JUNB")
@@ -129,6 +131,84 @@ plot_clusters_line_by_erki <- function(d, cluster) {
 lfc_long_z %>%
   inner_join(function_clusters, by = c("gene_id", "gene_name")) %>%
   plot_clusters_line_by_erki(class_combined)
+
+temporal_clusters_kmedoid <- temporal_distance_per_cluster %>%
+  crossing(k = 2:4) %>%
+  mutate(
+    cluster_res = map2(
+      data, k,
+      cluster::pam
+    ),
+    cluster_df = map(
+      cluster_res,
+      ~.x %>%
+        chuck("clustering") %>%
+        enframe("gene_id", "cluster") %>%
+        mutate_at(vars(cluster), as.character)
+    )
+  )
+
+temporal_clusters_kmedoid_surface_plots <- temporal_clusters_kmedoid %>%
+  mutate(
+    data = map(
+      cluster_df,
+      function(df) {
+        df_trans <- lfc_long_z %>%
+          inner_join(df, by = "gene_id") %>%
+          group_by(condition, ERKi, Time, DOX, cluster) %>%
+          summarize(
+            log2FoldChange_mean = mean(log2FoldChange),
+            log2FoldChange_sd = sqrt(var(log2FoldChange))
+          ) %>%
+          ungroup()
+        mean_plot <- df_trans %>%
+          plot_single_surface(aes(ERKi, Time, fill = log2FoldChange_mean)) +
+            facet_wrap(vars(cluster))
+        sd_plot <- df_trans %>%
+          plot_single_surface(aes(ERKi, Time, fill = log2FoldChange_sd)) +
+          facet_wrap(vars(cluster)) +
+          labs(fill = "standard deviation")
+        ggarrange(mean_plot, sd_plot, draw = FALSE)
+      }
+    )
+  )
+
+# Temporal clustering based on reaching certain relative threshold -------------
+###############################################################################T
+
+temporal_ordering_overall <- lfc_long %>%
+  inner_join(condition_meta, by = "condition") %>%
+  filter(DOX == 1) %>%
+  inner_join(function_clusters, by = c("gene_id", "gene_name")) %>%
+  arrange(gene_id, gene_name, Time, ERKi) %>%
+  group_by(gene_id, gene_name) %>%
+  summarize(
+    mid_induction = log2FoldChange[order(abs(log2FoldChange), decreasing = TRUE)[1]] %>%
+      magrittr::multiply_by(.5) %>%
+      {if (. > 0) Time[min(which(log2FoldChange > .))] else Time[min(which(log2FoldChange < .))]},
+    max_induction = Time[order(abs(log2FoldChange), decreasing = TRUE)[1]]
+  ) %>%
+  ungroup()
+
+plot_single_surface(
+  lfc_long %>%
+    inner_join(condition_meta, by = "condition") %>%
+    filter(gene_name == "FOSB")
+)
+
+temporal_ordering_overall %>%
+  count(mid_induction, max_induction) %>%
+  mutate_at(vars(mid_induction, max_induction), . %>% as.character() %>%  fct_inseq()) %>%
+  ggplot(aes(mid_induction, max_induction, fill = n)) +
+    geom_raster()
+
+
+temporal_ordering_overall %>%
+  mutate_at(vars(mid_induction, max_induction), . %>% as.character() %>%  fct_inseq()) %>%
+  gather("key", "value", -gene_id, -gene_name) %>%
+  mutate_at(vars(value), . %>% as.character() %>%  fct_inseq()) %>%
+  ggplot(aes(value, fill = key)) +
+    geom_bar(position = "dodge")
 
 # Temporal clustering based only on most extreme condition ---------------------
 ###############################################################################T
