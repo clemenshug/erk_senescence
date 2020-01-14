@@ -176,17 +176,52 @@ temporal_clusters_kmedoid_surface_plots <- temporal_clusters_kmedoid %>%
 # Temporal clustering based on reaching certain relative threshold -------------
 ###############################################################################T
 
-temporal_ordering_overall <- lfc_long %>%
+temporal_ordering_max_col <- lfc_long %>%
   inner_join(condition_meta, by = "condition") %>%
   filter(DOX == 1) %>%
   inner_join(function_clusters, by = c("gene_id", "gene_name")) %>%
   arrange(gene_id, gene_name, Time, ERKi) %>%
   group_by(gene_id, gene_name) %>%
+  group_modify(
+    function(df, g) {
+      max_induction <- df %>%
+        arrange(desc(abs(log2FoldChange))) %>%
+        slice(1)
+      max_lfc <- max_induction[["log2FoldChange"]]
+      tibble(
+        mid_induction = df %>%
+          filter(
+            ERKi == max_induction[["ERKi"]],
+            if (max_lfc > 0 ) log2FoldChange > 0.5 * max_lfc else log2FoldChange < 0.5 * max_lfc
+          ) %>%
+          chuck("Time", 1),
+        max_induction = max_induction[["Time"]]
+      )
+    }
+  ) %>%
+  ungroup()
+
+temporal_ordering_avg_col_stats <- lfc_long %>%
+  inner_join(condition_meta, by = "condition") %>%
+  filter(DOX == 1) %>%
+  inner_join(function_clusters, by = c("gene_id", "gene_name")) %>%
+  arrange(gene_id, gene_name, Time, ERKi) %>%
+  group_by(gene_id, gene_name, ERKi) %>%
+  mutate(
+    log2FoldChange_rescaled = log2FoldChange %>%
+      {if (.[order(abs(.), decreasing = TRUE)[1]] > 0) scales::rescale(.) else (scales::rescale(-.))},
+    log2FoldChange_var = var(log2FoldChange)
+  ) %>%
+  ungroup() %>%
+  group_by(gene_id, gene_name, Time) %>%
+  mutate(log2FoldChange_rescaled_mean = weighted.mean(log2FoldChange_rescaled, log2FoldChange_var)) %>%
+  ungroup()
+
+temporal_ordering_avg_col <- temporal_ordering_avg_col_stats %>%
+  group_by(gene_id, gene_name) %>%
   summarize(
-    mid_induction = log2FoldChange[order(abs(log2FoldChange), decreasing = TRUE)[1]] %>%
-      magrittr::multiply_by(.5) %>%
-      {if (. > 0) Time[min(which(log2FoldChange > .))] else Time[min(which(log2FoldChange < .))]},
-    max_induction = Time[order(abs(log2FoldChange), decreasing = TRUE)[1]]
+    max_induction = Time[order(log2FoldChange_rescaled_mean, decreasing = TRUE)[1]],
+    mid_induction = if (!any(log2FoldChange_rescaled_mean > 0.5)) max_induction else Time[min(which(log2FoldChange_rescaled_mean > 0.5))]
   ) %>%
   ungroup()
 
@@ -196,14 +231,21 @@ plot_single_surface(
     filter(gene_name == "FOSB")
 )
 
-temporal_ordering_overall %>%
+plot_single_surface(
+  temporal_ordering_avg_col_stats %>%
+    filter(gene_name == "FOSB") %>%
+    mutate(log2FoldChange_rescaled_var = log2FoldChange_rescaled*log2FoldChange_var),
+  aes(ERKi, Time, fill = log2FoldChange_rescaled_var)
+)
+
+temporal_ordering_avg_col %>%
   count(mid_induction, max_induction) %>%
   mutate_at(vars(mid_induction, max_induction), . %>% as.character() %>%  fct_inseq()) %>%
   ggplot(aes(mid_induction, max_induction, fill = n)) +
     geom_raster()
 
 
-temporal_ordering_overall %>%
+temporal_ordering_avg_col %>%
   mutate_at(vars(mid_induction, max_induction), . %>% as.character() %>%  fct_inseq()) %>%
   gather("key", "value", -gene_id, -gene_name) %>%
   mutate_at(vars(value), . %>% as.character() %>%  fct_inseq()) %>%
