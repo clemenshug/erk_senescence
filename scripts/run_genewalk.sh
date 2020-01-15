@@ -11,4 +11,4 @@ project="${filename%.*}"
 
 set -eux
 
-genewalk --project "$project" --base_folder $(pwd) --id_type ensembl_id
+genewalk --project "$project" --base_folder $(pwd) --id_type ensembl_id --nproc 4 --genes "$genes"
