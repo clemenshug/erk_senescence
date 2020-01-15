@@ -7,6 +7,9 @@ library(egg)
 synLogin()
 syn <- synDownloader(here("tempdl"), followLink = TRUE)
 
+wd <- here("temporal_ordering")
+dir.create(wd, showWarnings = FALSE)
+
 # set directories, import files ------------------------------------------------
 ###############################################################################T
 
@@ -49,7 +52,6 @@ lfc_long_z <- lfc_long %>%
 
 # Plotting functions -----------------------------------------------------------
 ###############################################################################T
-
 
 plot_single_surface <- function(d, aesthetic = aes(ERKi, Time, fill = log2FoldChange)) {
   fill_quo <- aesthetic[["fill"]]
@@ -211,33 +213,34 @@ temporal_clusters_kmedoid_surface_plots <- temporal_clusters_kmedoid %>%
     )
   )
 
+wd_clustering <- file.path(wd, "clustering")
+dir.create(wd_clustering, showWarnings = FALSE)
+
+write_rds(
+  temporal_clusters_hclust,
+  file.path(wd_clustering, "temporal_euclidian_hclust.rds")
+)
+
+write_rds(
+  temporal_clusters_kmedoid,
+  file.path(wd_clustering, "temporal_kmedoids.rds")
+)
+
+dir.create(file.path(wd_clustering, "kmedoid_plots"), showWarnings = FALSE)
+
+pwalk(
+  temporal_clusters_kmedoid_surface_plots,
+  function(class_combined, k, data, ...) {
+    cowplot::ggsave2(
+      file.path(wd_clustering, "kmedoid_plots", paste0("mean_sd_heatmap_", class_combined, "_", k, ".pdf")),
+      data
+    )
+  }
+)
+
 # Temporal clustering based on reaching certain relative threshold -------------
 ###############################################################################T
 
-temporal_ordering_max_col <- lfc_long %>%
-  inner_join(condition_meta, by = "condition") %>%
-  filter(DOX == 1) %>%
-  inner_join(function_clusters, by = c("gene_id", "gene_name")) %>%
-  arrange(gene_id, gene_name, Time, ERKi) %>%
-  group_by(gene_id, gene_name) %>%
-  group_modify(
-    function(df, g) {
-      max_induction <- df %>%
-        arrange(desc(abs(log2FoldChange))) %>%
-        slice(1)
-      max_lfc <- max_induction[["log2FoldChange"]]
-      tibble(
-        mid_induction = df %>%
-          filter(
-            ERKi == max_induction[["ERKi"]],
-            if (max_lfc > 0 ) log2FoldChange > 0.5 * max_lfc else log2FoldChange < 0.5 * max_lfc
-          ) %>%
-          chuck("Time", 1),
-        max_induction = max_induction[["Time"]]
-      )
-    }
-  ) %>%
-  ungroup()
 
 temporal_ordering_avg_col_stats <- lfc_long %>%
   inner_join(condition_meta, by = "condition") %>%
@@ -259,6 +262,8 @@ temporal_ordering_avg_col <- temporal_ordering_avg_col_stats %>%
   group_by(gene_id, gene_name) %>%
   summarize(
     max_induction = Time[order(log2FoldChange_rescaled_mean, decreasing = TRUE)[1]],
+    # In extremely rare cases log2FoldChange_rescaled_mean never reaches 0.5 in
+    # any condition, just taking the time point with max induction then
     mid_induction = if (!any(log2FoldChange_rescaled_mean > 0.5)) max_induction else Time[min(which(log2FoldChange_rescaled_mean > 0.5))]
   ) %>%
   ungroup()
@@ -276,16 +281,58 @@ plot_single_surface(
   aes(ERKi, Time, fill = log2FoldChange_rescaled_var)
 )
 
-temporal_ordering_avg_col %>%
+hm_mid_vs_max <- temporal_ordering_avg_col %>%
   count(mid_induction, max_induction) %>%
   mutate_at(vars(mid_induction, max_induction), . %>% as.character() %>%  fct_inseq()) %>%
   ggplot(aes(mid_induction, max_induction, fill = n)) +
     geom_raster()
+cowplot::ggsave2(
+  file.path(wd, "temporal_ordering_heatmap_mid_vs_max.pdf"),
+  hm_mid_vs_max, width = 7, height = 5
+)
 
-
-temporal_ordering_avg_col %>%
+barplot_mid_vs_max <- temporal_ordering_avg_col %>%
   mutate_at(vars(mid_induction, max_induction), . %>% as.character() %>%  fct_inseq()) %>%
   gather("key", "value", -gene_id, -gene_name) %>%
   mutate_at(vars(value), . %>% as.character() %>%  fct_inseq()) %>%
   ggplot(aes(value, fill = key)) +
     geom_bar(position = "dodge")
+cowplot::ggsave2(
+  file.path(wd, "temporal_ordering_barplot_mid_vs_max.pdf"),
+  barplot_mid_vs_max, width = 5, height = 3
+)
+
+write_rds(
+  temporal_ordering_avg_col_stats,
+  file.path(wd, "temporal_ordering_avg_col_stats.rds")
+)
+
+write_csv(
+  temporal_ordering_avg_col,
+  file.path(wd, "temporal_ordering_avg_col.csv")
+)
+
+# Store to synapse -------------------------------------------------------------
+###############################################################################T
+
+activity <- Activity(
+  "Classify genes by the timing of their induction",
+  used = c(
+    "syn21478380",
+    "syn21432183",
+    "syn21432975"
+  ),
+  executed = "https://github.com/clemenshug/erk_senescence/blob/master/analysis/cluster_temporal.R"
+)
+
+temporal_ordering_syn <- Folder("temporal_ordering", "syn21432134") %>%
+  synStore() %>%
+  chuck("properties", "id")
+
+c(
+  file.path(wd, "temporal_ordering_avg_col_stats.rds"),
+  file.path(wd, "temporal_ordering_avg_col.csv"),
+  file.path(wd_clustering, "temporal_euclidian_hclust.rds"),
+  file.path(wd_clustering, "temporal_kmedoids.rds")
+) %>%
+  synStoreMany(temporal_ordering_syn, activity = activity)
