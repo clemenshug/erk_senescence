@@ -206,8 +206,7 @@ pwalk(
 # Temporal clustering based on reaching certain relative threshold -------------
 ###############################################################################T
 
-
-temporal_ordering_avg_col_stats <- lfc_long %>%
+lfc_rescaled <- lfc_long %>%
   inner_join(condition_meta, by = "condition") %>%
   filter(DOX == 1) %>%
   inner_join(function_clusters, by = c("gene_id", "gene_name")) %>%
@@ -221,15 +220,34 @@ temporal_ordering_avg_col_stats <- lfc_long %>%
   ) %>%
   ungroup() %>%
   group_by(gene_id, gene_name, Time) %>%
-  # group_modify(
-  #   function(df, g) {
-  #     rescaled_cor <- df %>%
-  #       select()
-  #   }
-  # )
   mutate(
     log2FoldChange_rescaled_mean = weighted.mean(log2FoldChange_rescaled, log2FoldChange_var_time),
-    log2FoldChange_rescaled_var_erki = Hmisc::wtd.var(log2FoldChange_rescaled, log2FoldChange_var_time, method = "ML")
+    log2FoldChange_rescaled_var_erki = Hmisc::wtd.var(log2FoldChange_rescaled, log2FoldChange_var_time, method = "ML"),
+    log2FoldChange_var_erki = Hmisc::wtd.var(log2FoldChange, log2FoldChange_var_time, method = "ML")
+  ) %>%
+  ungroup()
+
+
+cor_across_erk <- lfc_rescaled %>%
+  group_by(gene_id, gene_name) %>%
+  group_modify(
+    function(df, g) {
+      # browser()
+      lfc_mat <- df %>%
+        select(ERKi, Time, log2FoldChange_rescaled) %>%
+        spread(ERKi, log2FoldChange_rescaled) %>%
+        column_to_rownames("Time") %>%
+        as.matrix()
+      var_mat <- df %>%
+        select(ERKi, Time, log2FoldChange_var_time) %>%
+        spread(ERKi, log2FoldChange_var_time) %>%
+        column_to_rownames("Time") %>%
+        as.matrix()
+      lfc_cor_mat <- cor(lfc_mat, method = "pearson")
+      var_cross_mat <- var_mat * t(var_mat)
+      weighted_mean_cor <- weighted.mean(c(lfc_cor_mat), c(var_cross_mat))
+      tibble(weighted_mean_cor = weighted_mean_cor)
+    }
   ) %>%
   ungroup()
 
@@ -245,40 +263,57 @@ temporal_ordering_avg_col_stats <- lfc_long %>%
 #
 
 
-temporal_ordering_avg_col <- temporal_ordering_avg_col_stats %>%
+temporal_ordering_avg_col <- lfc_rescaled %>%
   group_by(gene_id, gene_name) %>%
-  # group_modify(
-  #   function(df, g) {
-  #
-  #   }
-  # )
-  summarize(
-    max_induction = Time[order(log2FoldChange_rescaled_mean, decreasing = TRUE)[1]],
-    # In extremely rare cases log2FoldChange_rescaled_mean never reaches 0.5 in
-    # any condition, just taking the time point with max induction then
-    mid_induction = if (!any(log2FoldChange_rescaled_mean > 0.5)) max_induction else Time[min(which(log2FoldChange_rescaled_mean > 0.5))],
-    mean_variance = mean(log2FoldChange_rescaled_var_erki)
+  group_modify(
+    function(df, g) {
+      all_erki <- df %>%
+        summarize(
+          max_induction = Time[order(log2FoldChange_rescaled_mean, decreasing = TRUE)[1]],
+          # In extremely rare cases log2FoldChange_rescaled_mean never reaches 0.5 in
+          # any condition, just taking the time point with max induction then
+          mid_induction = if (!any(log2FoldChange_rescaled_mean > 0.5)) max_induction else Time[min(which(log2FoldChange_rescaled_mean > 0.5))],
+          variance = mean(log2FoldChange_var_erki)
+        ) %>%
+        mutate(ERKi = "all")
+      by_erki <- df %>%
+        mutate_at(vars(ERKi), as.character) %>%
+        group_by(ERKi) %>%
+        summarize(
+          max_induction = Time[order(log2FoldChange_rescaled, decreasing = TRUE)[1]],
+          # In extremely rare cases log2FoldChange_rescaled_mean never reaches 0.5 in
+          # any condition, just taking the time point with max induction then
+          mid_induction = if (!any(log2FoldChange_rescaled > 0.5)) max_induction else Time[min(which(log2FoldChange_rescaled > 0.5))],
+          variance = unique(log2FoldChange_var_time)
+        ) %>%
+        ungroup()
+      bind_rows(
+        all_erki,
+        by_erki
+      )
+    }
   ) %>%
   ungroup()
 
 plot_single_surface(
   lfc_long %>%
     inner_join(condition_meta, by = "condition") %>%
-    filter(gene_name == "FOS")
+    filter(gene_name == "DUSP1")
 )
 
 plot_single_surface(
   temporal_ordering_avg_col_stats %>%
-    filter(gene_name == "FOS") %>%
+    filter(gene_name == "ZNF792") %>%
     mutate(log2FoldChange_rescaled_norm = log2FoldChange_rescaled*log2FoldChange_var_time),
   aes(ERKi, Time, fill = log2FoldChange_rescaled_norm)
 )
 
 hm_mid_vs_max <- temporal_ordering_avg_col %>%
-  count(mid_induction, max_induction) %>%
+  count(mid_induction, max_induction, ERKi) %>%
   mutate_at(vars(mid_induction, max_induction), . %>% as.character() %>%  fct_inseq()) %>%
   ggplot(aes(mid_induction, max_induction, fill = n)) +
-    geom_raster()
+    geom_raster() +
+    facet_wrap(vars(ERKi))
 cowplot::ggsave2(
   file.path(wd, "temporal_ordering_heatmap_mid_vs_max.pdf"),
   hm_mid_vs_max, width = 7, height = 5
@@ -286,14 +321,18 @@ cowplot::ggsave2(
 
 barplot_mid_vs_max <- temporal_ordering_avg_col %>%
   mutate_at(vars(mid_induction, max_induction), . %>% as.character() %>%  fct_inseq()) %>%
-  gather("key", "value", -gene_id, -gene_name) %>%
+  gather("key", "value", max_induction, mid_induction) %>%
   mutate_at(vars(value), . %>% as.character() %>%  fct_inseq()) %>%
   ggplot(aes(value, fill = key)) +
-    geom_bar(position = "dodge")
+    geom_bar(position = "dodge") +
+    facet_wrap(vars(ERKi))
 cowplot::ggsave2(
   file.path(wd, "temporal_ordering_barplot_mid_vs_max.pdf"),
   barplot_mid_vs_max, width = 5, height = 3
 )
+
+temporal_ordering_avg_col_stats <- lfc_rescaled %>%
+  left_join(cor_across_erk, by = c("gene_id", "gene_name"))
 
 write_rds(
   temporal_ordering_avg_col_stats,
