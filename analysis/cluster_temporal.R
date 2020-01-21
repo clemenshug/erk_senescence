@@ -222,14 +222,14 @@ pwalk(
 
 # Temporal clustering based on reaching certain relative threshold -------------
 ###############################################################################T
-
-lfc_rescaled <- lfc_long %>%
+temporal_lfc <- lfc_long %>%
   inner_join(condition_meta, by = "condition") %>%
-  filter(DOX == 1) %>%
-  inner_join(function_clusters, by = c("gene_id", "gene_name")) %>%
-  arrange(gene_id, gene_name, Time, ERKi) %>%
+  filter(DOX == 1, gene_id %in% surface_fit$gene_id) %>%
+  arrange(gene_id, gene_name, ERKi, Time)
+
+temporal_stats_erki <- temporal_lfc %>%
   group_by(gene_id, gene_name, ERKi) %>%
-  mutate(
+  summarize(
     direction_max = if_else(
       log2FoldChange[order(abs(log2FoldChange), decreasing = TRUE)[[1]]] > 0,
       "pos",
@@ -240,25 +240,36 @@ lfc_rescaled <- lfc_long %>%
       "pos",
       "neg"
     ),
-    log2FoldChange_rescaled = log2FoldChange %>%
-      magrittr::divide_by(log2FoldChange[order(abs(log2FoldChange), decreasing = TRUE)[[1]]]),
-      # abs() %>%
-      # scales::rescale(),
-    log2FoldChange_var_time = var(log2FoldChange),
-    log2FoldChange_range_time = max(log2FoldChange) - min(log2FoldChange)
-  ) %>%
-  ungroup() %>%
-  group_by(gene_id, gene_name, Time) %>%
-  mutate(
-    log2FoldChange_rescaled_mean = weighted.mean(log2FoldChange_rescaled, log2FoldChange_var_time),
-    log2FoldChange_rescaled_var_erki = Hmisc::wtd.var(log2FoldChange_rescaled, log2FoldChange_var_time, method = "ML"),
-    log2FoldChange_var_erki = Hmisc::wtd.var(log2FoldChange, log2FoldChange_var_time, method = "ML")
+    log2FoldChange_var_erki = var(log2FoldChange),
+    log2FoldChange_range_erki = max(log2FoldChange) - min(log2FoldChange)
   ) %>%
   ungroup()
 
+temporal_lfc_rescaled <- temporal_lfc %>%
+  group_by(gene_id, gene_name, ERKi) %>%
+  transmute(
+    Time,
+    log2FoldChange,
+    directed = log2FoldChange %>%
+      magrittr::divide_by(log2FoldChange[order(abs(log2FoldChange), decreasing = TRUE)[[1]]]),
+    absolute = log2FoldChange %>%
+      abs() %>%
+      magrittr::divide_by(max(.))
+  ) %>%
+  ungroup() %>%
+  gather(key = "directed", value = "log2FoldChange_rescaled", directed, absolute)
 
-cor_across_erk <- lfc_rescaled %>%
-  group_by(gene_id, gene_name) %>%
+temporal_stats <- temporal_lfc_rescaled %>%
+  inner_join(temporal_stats_erki, by = c("gene_name", "gene_id", "ERKi")) %>%
+  group_by(gene_id, gene_name, directed, Time) %>%
+  mutate(
+    log2FoldChange_rescaled_mean = weighted.mean(log2FoldChange_rescaled, log2FoldChange_var_erki),
+    log2FoldChange_rescaled_var_erki = Hmisc::wtd.var(log2FoldChange_rescaled, log2FoldChange_var_erki, method = "ML")
+  ) %>%
+  ungroup()
+
+cor_across_erk <- temporal_stats %>%
+  group_by(gene_id, gene_name, directed) %>%
   group_modify(
     function(df, g) {
       # browser()
@@ -268,7 +279,7 @@ cor_across_erk <- lfc_rescaled %>%
         column_to_rownames("Time") %>%
         as.matrix()
       var_vec <- df %>%
-        distinct(ERKi, log2FoldChange_var_time) %>%
+        distinct(ERKi, log2FoldChange_var_erki) %>%
         column_to_rownames("ERKi") %>%
         as.matrix()
       lfc_cor_mat <- cor(lfc_mat, method = "pearson")
@@ -280,27 +291,30 @@ cor_across_erk <- lfc_rescaled %>%
   ) %>%
   ungroup()
 
-# temporal_ordering_avg_col_stats_hetero <- temporal_ordering_avg_col_stats %>%
-#   group_by(gene_id, gene_name, Time)
-#
-# lfc_long %>%
-#   inner_join(condition_meta, by = "condition") %>%
-#   filter(gene_name == "DUSP1", DOX == 1) %>%
-#   select(gene_id, Time, ERKi, log2FoldChange) %>%
-#   spread(ERKi, log2FoldChange) %>%
-#   GGally::ggpairs(columns = 3:ncol(.))
-#
 
-
-temporal_ordering_avg_col <- lfc_rescaled %>%
-  group_by(gene_id, gene_name) %>%
+temporal_ordering <- temporal_stats %>%
+  group_by(gene_id, gene_name, directed) %>%
   group_modify(
     function(df, g) {
       all_erki <- df %>%
+        # distinct(Time, log2FoldChange_rescaled_mean) %>%
         summarize(
           max_induction = Time[order(log2FoldChange_rescaled_mean, decreasing = TRUE)[1]],
           mid_induction = Time[min(which(log2FoldChange_rescaled_mean > 0.5 * max(abs(log2FoldChange_rescaled_mean))))],
-          variance = mean(log2FoldChange_var_erki)
+          variance = mean(log2FoldChange_var_erki),
+          direction_max = if_else(
+            log2FoldChange[order(abs(log2FoldChange), decreasing = TRUE)[[1]]] > 0,
+            "pos",
+            "neg"
+          ),
+          direction_end = filter(., Time == 24) %>%
+            pull(log2FoldChange) %>%
+            mean() %>%
+            magrittr::is_greater_than(0) %>%
+            if_else(
+              "pos",
+              "neg"
+            )
         ) %>%
         mutate(ERKi = "all")
       by_erki <- df %>%
@@ -311,7 +325,7 @@ temporal_ordering_avg_col <- lfc_rescaled %>%
           # In extremely rare cases log2FoldChange_rescaled_mean never reaches 0.5 in
           # any condition, just taking the time point with max induction then
           mid_induction = Time[min(which(log2FoldChange_rescaled > 0.5 * max(abs(log2FoldChange_rescaled))))],
-          variance = unique(log2FoldChange_var_time),
+          variance = unique(log2FoldChange_var_erki),
           direction_max = unique(direction_max),
           direction_end = unique(direction_end)
         ) %>%
@@ -361,13 +375,13 @@ cowplot::ggsave2(
 )
 
 write_rds(
-  lfc_rescaled,
-  file.path(wd, "temporal_ordering_avg_col_stats.rds")
+  temporal_stats,
+  file.path(wd, "temporal_stats.rds")
 )
 
 write_csv(
-  temporal_ordering_avg_col,
-  file.path(wd, "temporal_ordering_avg_col.csv")
+  temporal_ordering,
+  file.path(wd, "temporal_ordering.csv")
 )
 
 # Store to synapse -------------------------------------------------------------
@@ -388,8 +402,8 @@ temporal_ordering_syn <- Folder("temporal_ordering", "syn21432134") %>%
   chuck("properties", "id")
 
 c(
-  file.path(wd, "temporal_ordering_avg_col_stats.rds"),
-  file.path(wd, "temporal_ordering_avg_col.csv"),
+  file.path(wd, "temporal_stats.rds"),
+  file.path(wd, "temporal_ordering.csv"),
   file.path(wd_clustering, "temporal_euclidian_hclust.rds"),
   file.path(wd_clustering, "temporal_kmedoids.rds")
 ) %>%

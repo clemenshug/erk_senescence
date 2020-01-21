@@ -1,5 +1,4 @@
 library(tidyverse)
-library(ssh)
 library(here)
 library(synapser)
 library(synExtra)
@@ -18,11 +17,11 @@ dir.create(wd, showWarnings = FALSE)
 surface_fit <- syn("syn21444486") %>%
   read_csv()
 
-temporal_ordering <- syn("syn21521367") %>%
+temporal_ordering <- syn("syn21536903") %>%
   read_csv()
 
-temporal_ordering_stats <- syn("syn21521366") %>%
-  read_rds()
+temporal_ordering_stats <- syn("syn21537190") %>%
+  read_csv()
 
 meta <- syn("syn21432975") %>%
   read_csv()
@@ -91,10 +90,11 @@ temporal_ordering_avg <- temporal_ordering_stats %>%
   distinct(
     gene_id,
     gene_name,
+    directed,
     Time,
     log2FoldChange_rescaled_mean
   ) %>%
-  inner_join(temporal_ordering, by = c("gene_id", "gene_name"))
+  inner_join(temporal_ordering, by = c("gene_id", "gene_name", "directed"))
 
 temporal_ordering_traces <-  plot_cluster_trajectories(
   temporal_ordering_avg %>%
@@ -174,38 +174,62 @@ plot_induction_heatmap <- function(
   )
 }
 
+
+
 temporal_ordering_heatmap_data <- temporal_ordering_stats %>%
   mutate_at(vars(ERKi), as.character) %>%
-  inner_join(temporal_ordering, by = c("gene_id", "gene_name", "ERKi")) %>%
+  inner_join(temporal_ordering, by = c("gene_id", "gene_name", "ERKi", "directed")) %>%
   distinct(
     gene_id,
+    directed,
     direction_max = direction_max.x,
-    log2FoldChange_norm = log2FoldChange_rescaled * log2FoldChange_var_time * if_else(direction_max.x == "pos", 1, -1),
+    log2FoldChange,
+    log2FoldChange_norm = log2FoldChange_rescaled * log2FoldChange_var_erki * if_else(direction_max.x == "pos", 1, -1),
     ERKi,
     Time,
     mid_induction,
-    max_induction
+    max_induction,
+    variance
+  )
+
+temporal_ordering_heatmap_row_ann <- temporal_ordering %>%
+  select(gene_id, ERKi, directed, max_induction, mid_induction) %>%
+  mutate_at(
+    vars(ends_with("induction")),
+    ~factor(as.character(.x), levels = as.character(sort(unique(.x))))
+  ) %>%
+  inner_join(select(function_clusters, gene_id, class_combined), by = c("gene_id")) %>%
+  group_nest(ERKi, directed, .key = "ann") %>%
+  mutate(
+    ann = map(
+      ann,
+      ~.x %>%
+        column_to_rownames("gene_id") %>%
+        as.data.frame()
+    )
   )
 
 
 temporal_ordering_heatmaps <- temporal_ordering_heatmap_data %>%
-  group_nest(ERKi) %>%
+  group_nest(ERKi, directed) %>%
+  inner_join(temporal_ordering_heatmap_row_ann, by = c("ERKi", "directed")) %>%
   mutate(
-    data = map(
-      data,
-      plot_induction_heatmap,
-      gene_id, list(direction_max, desc(mid_induction), desc(max_induction)), Time, list(Time), log2FoldChange_norm,
-      show_rownames = FALSE
+    data = map2(
+      data, ann,
+      ~plot_induction_heatmap(
+        .x, gene_id, list(direction_max, mid_induction, desc(variance)), Time, list(Time), log2FoldChange,
+        show_rownames = FALSE, annotation_row = .y
+      )
     )
   )
 
 pwalk(
   temporal_ordering_heatmaps,
-  function(ERKi, data) {
+  function(ERKi, directed, data, ...) {
     ggsave(
-      file.path(wd, paste0("temporal_ordering_heatmap_erki_", ERKi, ".pdf")),
+      file.path(wd, paste0("temporal_ordering_heatmap_erki_", ERKi, "_", directed, ".pdf")),
       data,
-      width = 6, height = 5
+      width = 4, height = 5
     )
   }
 )
@@ -217,10 +241,10 @@ scatter_mid_max <- temporal_ordering %>%
   arrange(ERKi, mid_induction, max_induction, desc(variance)) %>%
   filter(ERKi %in% c("0", "1000")) %>%
   mutate(ERKi = paste0("rank_ERKi_", ERKi)) %>%
-  group_by(ERKi) %>%
+  group_by(ERKi, directed) %>%
   mutate(rank = 1:n()) %>%
   ungroup() %>%
-  group_by(gene_name) %>%
+  group_by(gene_name, directed) %>%
   summarize(
     rank = list(set_names(rank, ERKi)),
     variance = prod(variance)
@@ -231,10 +255,10 @@ scatter_mid_max <- temporal_ordering %>%
   ggplot(aes(rank_ERKi_0, rank_ERKi_1000, alpha = variance, color = class_combined)) +
     geom_point() +
     scale_alpha_continuous(trans = "log10") +
-    facet_wrap(vars(class_combined))
+    facet_grid(vars(directed), vars(class_combined))
 
 ggsave(
   file.path(wd, "temporal_ordering_rank_erki_0_vs_erki_1000.pdf"),
-  scatter_mid_max
+  scatter_mid_max, width = 12, height = 8
 )
 
