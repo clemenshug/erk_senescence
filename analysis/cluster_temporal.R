@@ -302,6 +302,8 @@ temporal_ordering <- temporal_stats %>%
           max_induction = Time[order(log2FoldChange_rescaled_mean, decreasing = TRUE)[1]],
           mid_induction = Time[min(which(log2FoldChange_rescaled_mean > 0.5 * max(abs(log2FoldChange_rescaled_mean))))],
           variance = mean(log2FoldChange_var_erki),
+          max = log2FoldChange[order(log2FoldChange_rescaled_mean, decreasing = TRUE)[1]],
+          mean = mean(log2FoldChange),
           direction_max = if_else(
             log2FoldChange[order(abs(log2FoldChange), decreasing = TRUE)[[1]]] > 0,
             "pos",
@@ -326,6 +328,8 @@ temporal_ordering <- temporal_stats %>%
           # any condition, just taking the time point with max induction then
           mid_induction = Time[min(which(log2FoldChange_rescaled > 0.5 * max(abs(log2FoldChange_rescaled))))],
           variance = unique(log2FoldChange_var_erki),
+          mean = mean(log2FoldChange),
+          max = log2FoldChange[order(log2FoldChange_rescaled, decreasing = TRUE)[1]],
           direction_max = unique(direction_max),
           direction_end = unique(direction_end)
         ) %>%
@@ -338,18 +342,18 @@ temporal_ordering <- temporal_stats %>%
   ) %>%
   ungroup()
 
-plot_single_surface(
-  lfc_long %>%
-    inner_join(condition_meta, by = "condition") %>%
-    filter(gene_name == "MYC")
-)
-
-plot_single_surface(
-  lfc_rescaled %>%
-    filter(gene_name == "MYC") %>%
-    mutate(log2FoldChange_rescaled_norm = log2FoldChange_rescaled*log2FoldChange_var_time*if_else(direction_max == "pos", 1, -1)),
-  aes(ERKi, Time, fill = log2FoldChange_rescaled_norm)
-)
+# plot_single_surface(
+#   lfc_long %>%
+#     inner_join(condition_meta, by = "condition") %>%
+#     filter(gene_name == "MYC")
+# )
+#
+# plot_single_surface(
+#   lfc_rescaled %>%
+#     filter(gene_name == "MYC") %>%
+#     mutate(log2FoldChange_rescaled_norm = log2FoldChange_rescaled*log2FoldChange_var_time*if_else(direction_max == "pos", 1, -1)),
+#   aes(ERKi, Time, fill = log2FoldChange_rescaled_norm)
+# )
 
 hm_mid_vs_max <- temporal_ordering_avg_col %>%
   count(mid_induction, max_induction, ERKi) %>%
@@ -374,14 +378,46 @@ cowplot::ggsave2(
   barplot_mid_vs_max, width = 5, height = 3
 )
 
-write_rds(
+write_csv(
   temporal_stats,
-  file.path(wd, "temporal_stats.rds")
+  file.path(wd, "temporal_stats.csv")
 )
 
 write_csv(
   temporal_ordering,
   file.path(wd, "temporal_ordering.csv")
+)
+
+# Write special JY combined table with log2FoldChange --------------------------
+###############################################################################T
+
+temporal_ordering_with_lfc <- temporal_ordering %>%
+  filter(ERKi != "all") %>%
+  mutate_at(vars(ERKi), as.numeric) %>%
+  inner_join(
+    function_clusters,
+    by = c("gene_id", "gene_name")
+  ) %>%
+  nest_join(
+    temporal_lfc %>%
+      transmute(
+        gene_id,
+        ERKi,
+        Time = factor(as.character(Time), levels = as.character(sort(unique(Time)))) %>%
+          fct_relabel(~paste0("lfc_", .x)),
+        log2FoldChange
+      ) %>%
+      arrange(Time) %>%
+      spread(Time, log2FoldChange),
+    by = c("gene_id", "ERKi"),
+    name = "lfc_data"
+  ) %>%
+  unnest(lfc_data) %>%
+  arrange(gene_name, directed, ERKi)
+
+write_csv(
+  temporal_ordering_with_lfc,
+  file.path(wd, "temporal_ordering_with_lfc.csv")
 )
 
 # Store to synapse -------------------------------------------------------------
@@ -402,9 +438,9 @@ temporal_ordering_syn <- Folder("temporal_ordering", "syn21432134") %>%
   chuck("properties", "id")
 
 c(
-  file.path(wd, "temporal_stats.rds"),
-  file.path(wd, "temporal_ordering.csv"),
-  file.path(wd_clustering, "temporal_euclidian_hclust.rds"),
-  file.path(wd_clustering, "temporal_kmedoids.rds")
+  file.path(wd, "temporal_stats.csv"),
+  file.path(wd, "temporal_ordering.csv")
+  # file.path(wd_clustering, "temporal_euclidian_hclust.rds"),
+  # file.path(wd_clustering, "temporal_kmedoids.rds")
 ) %>%
   synStoreMany(temporal_ordering_syn, activity = activity)
