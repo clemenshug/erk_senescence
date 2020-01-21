@@ -3,6 +3,8 @@ library(ssh)
 library(here)
 library(synapser)
 library(synExtra)
+library(pheatmap)
+library(RColorBrewer)
 
 synLogin()
 syn <- synDownloader(here("tempdl"), followLink = TRUE)
@@ -23,6 +25,9 @@ temporal_ordering_stats <- syn("syn21521366") %>%
   read_rds()
 
 meta <- syn("syn21432975") %>%
+  read_csv()
+
+function_clusters <- syn("syn21478380") %>%
   read_csv()
 
 condition_meta <- meta %>%
@@ -121,122 +126,95 @@ cowplot::ggsave2(
 #     by = c("gene_id", "gene_name", "ERKi")
 #   )
 
-# plot_induction_heatmap <- function(df, row_id, row_order, col_id, col_id_order, fill) {
-plot_induction_heatmap <- function(df, row_id, col_id, fill) {
+plot_induction_heatmap <- function(
+  df, row_id, row_order, col_id, col_id_order, fill, ...
+) {
+# plot_induction_heatmap <- function(df, row_id, col_id, fill) {
   row_id_quo <- enquo(row_id)
-  # row_order_quo <- map(row_order, enquo)
+  row_order_quo <- enquo(row_order)
   col_id_quo <- enquo(col_id)
-  # col_order_quo <- enquo(col_id_order)
+  col_order_quo <- enquo(col_id_order)
   fill_quo <- enquo(fill)
-  # browser()
-  # row_id_order <- df %>%
-  #   arrange(!!row_order_quo) %>%
-  #   pull(!!row_id_quo) %>%
-  #   unique()
-  # col_id_order <- df %>%
-  #   arrange(!!col_order_quo) %>%
-  #   pull(!!col_id_quo) %>%
-  #   unique()
-  # df <- df %>%
-  #   mutate(
-  #     !!row_id_quo := factor(!!row_id_quo, levels = row_id_order),
-  #     !!col_id_quo := factor(!!col_id_quo, levels = col_id_order)
-  #   )
+  row_id_order <- df %>%
+    arrange(!!!eval(rlang::get_expr(row_order_quo), envir = df)) %>%
+    pull(!!row_id_quo) %>%
+    unique()
+  col_id_order <- df %>%
+    arrange(!!!eval(rlang::get_expr(col_order_quo), envir = df)) %>%
+    pull(!!col_id_quo) %>%
+    unique()
+  df <- df %>%
+    mutate(
+      !!row_id_quo := factor(!!row_id_quo, levels = row_id_order),
+      !!col_id_quo := factor(!!col_id_quo, levels = col_id_order)
+    )
   abs_max <- df %>%
     pull(!!fill_quo) %>%
     abs() %>%
     quantile(.90, names = FALSE, na.rm = TRUE) %>%
     round(1)
-  # breaks <- seq(-abs_max, abs_max, by = 0.1)
-  # cmap <- rev(colorRampPalette(brewer.pal(7, "RdBu"))(length(breaks)))
-  df %>%
-    ggplot(aes(!!col_id_quo, !!row_id_quo, fill = !!fill_quo)) +
-      geom_raster() +
-      theme(
-        axis.text.y = element_blank(),
-        axis.ticks.y = element_blank()
-      ) +
-      scale_fill_distiller(palette = "RdBu", limits = c(-abs_max, abs_max))
+  if (abs_max < 0.01) abs_max <- 0.01
+  breaks <- seq(-abs_max, abs_max, by = signif(abs_max/10, 1))
+  cmap <- rev(colorRampPalette(brewer.pal(7, "RdBu"))(length(breaks) - 1))
+  # message(breaks)
+  mat <- df %>%
+    select(!!row_id_quo, !!col_id_quo, !!fill_quo) %>%
+    spread(!!col_id_quo, !!fill_quo) %>%
+    column_to_rownames(rlang::as_name(row_id_quo)) %>%
+    as.matrix()
+  # browser()
+  pheatmap(
+    mat,
+    color = cmap,
+    breaks = breaks,
+    cluster_cols = FALSE,
+    cluster_rows = FALSE,
+    draw = FALSE,
+    ...
+  )
 }
 
-
-hm_1000 <- temporal_ordering_stats %>%
+temporal_ordering_heatmap_data <- temporal_ordering_stats %>%
   mutate_at(vars(ERKi), as.character) %>%
   inner_join(temporal_ordering, by = c("gene_id", "gene_name", "ERKi")) %>%
-  filter(ERKi %in% c("1000")) %>%
-  distinct(gene_id, log2FoldChange, ERKi, Time, mid_induction, max_induction) %>%
-  group_by(gene_id, ERKi) %>%
-  mutate(
-    # pos_neg = filter(., Time == 24) %>%
-    #   chuck("log2FoldChange") %>%
-    #   {if (. > 0) "pos" else "neg"}
-    pos_neg = if (median(log2FoldChange) > 0) "pos" else "neg"
-  ) %>%
-  ungroup() %>%
-  mutate(
-    Time = factor(
-      Time,
-      levels = arrange(., Time) %>%
-        pull(Time) %>%
-        unique()
-    ),
-    gene_id = factor(
-      gene_id,
-      levels = arrange(., pos_neg, desc(mid_induction), desc(max_induction)) %>%
-        pull(gene_id) %>%
-        unique()
-    )
-  ) %>%
-  plot_induction_heatmap(
-    gene_id, Time, log2FoldChange
-  ) +
-  ggtitle("ERKi 1000nM")
+  distinct(
+    gene_id,
+    direction_max = direction_max.x,
+    log2FoldChange_norm = log2FoldChange_rescaled * log2FoldChange_var_time * if_else(direction_max.x == "pos", 1, -1),
+    ERKi,
+    Time,
+    mid_induction,
+    max_induction
+  )
 
-hm_0 <- temporal_ordering_stats %>%
-  mutate_at(vars(ERKi), as.character) %>%
-  inner_join(temporal_ordering, by = c("gene_id", "gene_name", "ERKi")) %>%
-  filter(ERKi %in% c("0")) %>%
-  distinct(gene_id, log2FoldChange, ERKi, Time, mid_induction, max_induction) %>%
-  group_by(gene_id, ERKi) %>%
-  mutate(
-    # pos_neg = filter(., Time == 24) %>%
-    #   chuck("log2FoldChange") %>%
-    #   {if (. > 0) "pos" else "neg"}
-    pos_neg = if (median(log2FoldChange) > 0) "pos" else "neg"
-  ) %>%
-  ungroup() %>%
-  mutate(
-    Time = factor(
-      Time,
-      levels = arrange(., Time) %>%
-        pull(Time) %>%
-        unique()
-    ),
-    gene_id = factor(
-      gene_id,
-      levels = arrange(., pos_neg, desc(mid_induction), desc(max_induction)) %>%
-        pull(gene_id) %>%
-        unique()
-    )
-  ) %>%
-  plot_induction_heatmap(
-    gene_id, Time, log2FoldChange
-  ) +
-  ggtitle("ERKi 0nM")
 
-combined <- egg::ggarrange(
-  hm_0,
-  hm_1000,
-  draw = FALSE, ncol = 2
+temporal_ordering_heatmaps <- temporal_ordering_heatmap_data %>%
+  group_nest(ERKi) %>%
+  mutate(
+    data = map(
+      data,
+      plot_induction_heatmap,
+      gene_id, list(direction_max, desc(mid_induction), desc(max_induction)), Time, list(Time), log2FoldChange_norm,
+      show_rownames = FALSE
+    )
+  )
+
+pwalk(
+  temporal_ordering_heatmaps,
+  function(ERKi, data) {
+    ggsave(
+      file.path(wd, paste0("temporal_ordering_heatmap_erki_", ERKi, ".pdf")),
+      data,
+      width = 6, height = 5
+    )
+  }
 )
-ggsave(file.path(wd, "temporal_ordering_heatmap.pdf"), combined, width = 6, height = 10)
-ggsave(file.path(wd, "temporal_ordering_heatmap.png"), combined, width = 6, height = 10)
 
 # Scatter plot of gene ranks at different ERK concentrations -------------------
 ###############################################################################T
 
 scatter_mid_max <- temporal_ordering %>%
-  arrange(mid_induction, max_induction) %>%
+  arrange(ERKi, mid_induction, max_induction, desc(variance)) %>%
   filter(ERKi %in% c("0", "1000")) %>%
   mutate(ERKi = paste0("rank_ERKi_", ERKi)) %>%
   group_by(ERKi) %>%
@@ -248,9 +226,12 @@ scatter_mid_max <- temporal_ordering %>%
     variance = prod(variance)
   ) %>%
   ungroup() %>%
+  inner_join(function_clusters, by = "gene_name") %>%
   unnest_wider(rank) %>%
-  ggplot(aes(rank_ERKi_0, rank_ERKi_1000, alpha = variance)) +
-    geom_point()
+  ggplot(aes(rank_ERKi_0, rank_ERKi_1000, alpha = variance, color = class_combined)) +
+    geom_point() +
+    scale_alpha_continuous(trans = "log10") +
+    facet_wrap(vars(class_combined))
 
 ggsave(
   file.path(wd, "temporal_ordering_rank_erki_0_vs_erki_1000.pdf"),
