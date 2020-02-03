@@ -142,6 +142,24 @@ classes <- tribble(
 ) %>%
   mutate(class_combined = paste(class, direction, sep = "_"))
 
+class_names <- tribble(
+  ~class_combined, ~class_name,
+  "low_erk_-", "low upregulated",
+  "low_erk_+", "low downregulated",
+  "high_erk_", "high downregulated",
+  "high_erk_+", "high upregulated",
+  "full_range_-", "full-range negative",
+  "full_range_+", "full-range positive",
+  "bell_-", "U-shape",
+  "bell_+", "bell-shape",
+  "no_response_0", "other"
+)
+
+write_csv(
+  class_names,
+  file.path(wd, "class_names.csv")
+)
+
 erk_range_lfc_classes <- erk_range_lfc_fit %>%
   select(gene_id, gene_name, erk_range, class) %>%
   spread(erk_range, class) %>%
@@ -550,7 +568,8 @@ lm_clustering_activity <- Activity(
 
 c(
   file.path(wd, "lm_clustering_classes.csv"),
-  file.path(wd, "function_clustering_classes.csv")
+  file.path(wd, "function_clustering_classes.csv"),
+  file.path(wd, "class_names.csv")
 ) %>%
   synStoreMany(syn_lm_clusters, activity = lm_clustering_activity)
 
