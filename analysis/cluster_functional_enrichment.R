@@ -223,3 +223,80 @@ temporal_ordering_abs_mid_ind_topgo <- temporal_ordering_abs %>%
     )
   )
 
+temporal_ordering_abs_mid_ind_topgo_df <- temporal_ordering_abs_mid_ind_topgo %>%
+  separate(mid_induction, c("mid_induction", "direction"), sep = "_") %>%
+  filter(ERKi %in% c("0", "1000")) %>%
+  dplyr::select(-data) %>%
+  unnest(enrichment) %>%
+  arrange(pval) %>%
+  filter(
+    id %in% (
+      c(
+        filter(., pval <= 0.05) %>%
+          group_by(mid_induction, ERKi) %>%
+          dplyr::slice(1:5) %>%
+          ungroup() %>%
+          pull(id),
+        filter(., pval <= 0.05) %>%
+          pull(id)
+      ) %>%
+        unique() %>%
+        head(50)
+    )
+  ) %>%
+  mutate(
+    signed_p = -log10(pval) * if_else(direction == "pos", 1, -1),
+    term = paste0(go_domain, "_", term)
+  ) %>%
+  arrange(term, mid_induction, ERKi, direction)
+
+plot_heatmap_gg <- function(df, aesthetic = aes(class, term, fill = signed_p), facet_by = NULL, ...) {
+  facet_by_quo <- enquo(facet_by)
+  abs_max <- df %>%
+    pull(!!aesthetic[["fill"]]) %>%
+    abs() %>%
+    quantile(.95, names = FALSE, na.rm = TRUE) %>%
+    round(1)
+  mat <- df %>%
+    dplyr::select(
+      !!aesthetic[["x"]],
+      !!aesthetic[["y"]],
+      !!aesthetic[["fill"]],
+      if (!is.null(facet_by)) quo_name(facet_by_quo) else NULL
+    ) %>%
+    {if (!is.null(facet_by)) mutate(., !!aesthetic[["x"]] := paste(!!aesthetic[["x"]], !!facet_by_quo)) %>% dplyr::select(-!!facet_by_quo) else .} %>%
+    spread(!!aesthetic[["x"]], !!aesthetic[["fill"]]) %>%
+    column_to_rownames(quo_name(aesthetic[["y"]])) %>%
+    as.matrix()
+  row_clust <- hclust(dist(mat, method = "euclidian"), "ward.D2")
+  df_ready <- df %>%
+    mutate(
+      !!aesthetic[["y"]] := factor(!!aesthetic[["y"]], levels = rownames(mat)[row_clust$order])
+    )
+  ggplot(df_ready, aes(class, term, fill = signed_p)) +
+    geom_raster() +
+    facet_wrap(vars(direction)) +
+    scale_fill_distiller(palette = "RdBu", limits = c(-abs_max, abs_max), oob = scales::squish) +
+    {if (!is.null(facet_by)) facet_wrap(vars(!!facet_by_quo)) else NULL}
+}
+
+
+temporal_ordering_abs_mid_ind_topgo_hm <- temporal_ordering_abs_mid_ind_topgo_df %>%
+  mutate(
+    mid_induction = factor(mid_induction, levels = c("early", "mid", "late"))
+  ) %>%
+  arrange(ERKi, mid_induction) %>%
+  mutate(
+    class = as.factor(
+      paste("ERKi", ERKi, mid_induction, sep = "_")
+    ) %>%
+      fct_inorder()
+  ) %>%
+  plot_heatmap_gg(facet_by = direction) +
+    theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+    labs(fill = "signed\n-log10(p)")
+ggsave(
+  file.path(wd, "temporal_ordering_mid_induction_go_heatmap.pdf"),
+  temporal_ordering_abs_mid_ind_topgo_hm, width = 14, height = 8
+)
+
