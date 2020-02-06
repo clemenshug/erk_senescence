@@ -144,12 +144,12 @@ classes <- tribble(
 
 class_names <- tribble(
   ~class_combined, ~class_name,
-  "low_erk_-", "low upregulated",
-  "low_erk_+", "low downregulated",
-  "high_erk_", "high downregulated",
-  "high_erk_+", "high upregulated",
-  "full_range_-", "full-range negative",
-  "full_range_+", "full-range positive",
+  "low_erk_-", "low ERK - upregulated",
+  "low_erk_+", "low ERK - downregulated",
+  "high_erk_-", "high ERK - downregulated",
+  "high_erk_+", "high ERK - upregulated",
+  "full_range_-", "full ERK - negative",
+  "full_range_+", "full ERK - positive",
   "bell_-", "U-shape",
   "bell_+", "bell-shape",
   "no_response_0", "other"
