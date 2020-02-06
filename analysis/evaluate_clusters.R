@@ -10,21 +10,16 @@ library(ggforce)
 synLogin()
 syn <- synDownloader(here("tempdl"), followLink = TRUE)
 
+syn_clustering <- "syn21432135"
+
 wd <- here("clustering", "overlap")
 dir.create(wd, recursive = TRUE, showWarnings = FALSE)
 
 # set directories, import files ------------------------------------------------
 ###############################################################################T
 
-km_clusters <- syn("syn21432143") %>%
-  read_csv() %>%
-  transmute(
-    gene_id,
-    gene_name,
-    cluster = recode(grouped_cluster, high_range = "high_erk", low_range = "low_erk", linear = "full_range"),
-    direction = recode(response, negative = "-", positive = "+"),
-    cluster_combined = paste0(cluster, "_", direction)
-  )
+km_clusters <- syn("syn21574266") %>%
+  read_csv()
 lm_clusters <- syn("syn21448572") %>%
   read_csv() %>%
   rename(cluster = class, cluster_combined = class_combined) %>%
@@ -32,8 +27,6 @@ lm_clusters <- syn("syn21448572") %>%
 function_clusters <- syn("syn21478380") %>%
   read_csv() %>%
   rename(cluster = class, cluster_combined = class_combined)
-meta <- syn("syn21432975") %>%
-  read_csv()
 surface_fit <- syn("syn21444486") %>%
   read_csv()
 
@@ -43,15 +36,26 @@ surface_fit <- syn("syn21444486") %>%
 cluster_algos <- tribble(
   ~algorithm, ~clusters,
   "k_medoids", km_clusters,
-  "linear_model", lm_clusters,
+  "linear_model", lm_clusters %>%
+    filter(gene_id %in% surface_fit$gene_id),
   "function_fitting", function_clusters
 )
 
 cluster_overlap <- cluster_algos %>%
   unnest(clusters) %>%
-  select(algorithm, gene_id, gene_name, cluster_combined) %>%
+  select(algorithm, gene_id, cluster_combined) %>%
+  inner_join(
+    surface_fit %>%
+      distinct(gene_id, gene_name),
+    by = "gene_id"
+  ) %>%
   spread(algorithm, cluster_combined) %>%
   drop_na()
+
+write_csv(
+  cluster_overlap,
+  file.path(wd, "cluster_overlap.csv")
+)
 
 cluster_overlap_venn <- cluster_overlap %>%
   group_by_at(vars(3:5)) %>%
@@ -64,5 +68,29 @@ cluster_overlap_venn <- cluster_overlap %>%
     geom_parallel_sets_labels(color = "white")
 cowplot::ggsave2(
   file.path(wd, "cluster_overlap_venn.pdf"),
-  cluster_overlap_venn, width = 8, height = 10
+  cluster_overlap_venn, width = 8, height = 12
 )
+
+# Store to synapse -------------------------------------------------------------
+###############################################################################T
+
+activity <- Activity(
+  "Evaluate and compare different clustering methods",
+  used = c(
+    "syn21574266",
+    "syn21448572",
+    "syn21478380",
+    "syn21444486"
+  ),
+  executed = "https://github.com/clemenshug/erk_senescence/blob/master/analysis/evaluate_clusters.R"
+)
+
+syn_overlap <- Folder("overlap", parent = syn_clustering) %>%
+  synStore() %>%
+  chuck("properties", "id")
+
+c(
+  file.path(wd, "cluster_overlap.csv")
+) %>%
+  synStoreMany(syn_overlap, activity = activity)
+
