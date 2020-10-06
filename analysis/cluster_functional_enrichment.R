@@ -8,6 +8,7 @@ library(pheatmap)
 library(ggforce)
 library(viridis)
 library(furrr)
+library(Homo.sapiens)
 
 synLogin()
 syn <- synDownloader(here("tempdl"), followLink = TRUE)
@@ -24,8 +25,8 @@ function_clusters <- syn("syn21576614") %>%
 deseq_padj <- syn("syn21432184") %>%
   read_csv()
 
-deseq_res <- syn("syn21432187") %>%
-  read_rds()
+deseq_res <- syn("syn22686427") %>%
+  read_csv()
 
 cluster_names <- syn("syn21567677") %>%
   read_csv() %>%
@@ -34,6 +35,266 @@ cluster_names <- syn("syn21567677") %>%
 
 temporal_ordering <- syn("syn21536903") %>%
   read_csv()
+
+meta <- syn("syn21432975") %>%
+  read_csv()
+
+condition_meta <- meta %>%
+  distinct(condition, DMSO, ERKi, Time, DOX)
+
+surface_fit_p <- syn("syn22800020") %>%
+  read_csv() %>%
+  mutate(across(c(gene_id, gene_name), .fns = ~str_replace_all(.x, fixed("'"), "")))
+
+# Metascape ----------------------------------------------------------------------
+###############################################################################T
+
+metascape_input <- function_clusters %>%
+  select(gene_name, consensus) %>%
+  filter(!consensus %in% c("no_response_0", "none")) %>%
+  group_by(consensus) %>%
+  mutate(id = 1:n()) %>%
+  ungroup() %>%
+  pivot_wider(id, names_from = consensus, values_from = gene_name, values_fill = "") %>%
+  select(-id)
+
+write_csv(metascape_input, file.path(wd, "metascape_input_consensus_sets.csv"))
+
+# Metascape all conditions -----------------------------------------------------
+###############################################################################T
+
+metascape_input <- deseq_res %>%
+  semi_join(
+    condition_meta %>%
+      filter(Time == 24),
+    by = "condition"
+  ) %>%
+  filter(padj <= 0.05) %>%
+  group_by(condition) %>%
+  arrange(padj, .by_group = TRUE) %>%
+  slice_head(n = 500) %>%
+  distinct(gene_id, condition) %>%
+  mutate(id = 1:n()) %>%
+  ungroup() %>%
+  pivot_wider(id, names_from = condition, values_from = gene_id, values_fill = "") %>%
+  select(-id)
+
+write_csv(metascape_input, file.path(wd, "metascape_input_all_conditions.csv"))
+
+# Querying CMap ----------------------------------------------------------------
+###############################################################################T
+
+library(clueR)
+library(biomaRt)
+
+mart <- biomaRt::useMart(
+  biomart = "ENSEMBL_MART_ENSEMBL",
+  dataset = "hsapiens_gene_ensembl"
+)
+ensembl_gene_id_mapping_biomart <- biomaRt::select(
+  mart,
+  unique(deseq_res$gene_id),
+  c("entrezgene_id", "ensembl_gene_id"), "ensembl_gene_id"
+) %>%
+  as_tibble() %>%
+  distinct()
+
+clue_gmt <- deseq_res %>%
+  # semi_join(
+  #   condition_meta %>%
+  #     filter(Time == 24 | (DOX == 1 & ERKi %in% c(0, 1000))),
+  #   by = "condition"
+  # ) %>%
+  filter(padj <= 0.05) %>%
+  arrange(padj, .by_group = TRUE) %>%
+  inner_join(
+    ensembl_gene_id_mapping_biomart,
+    by = c("gene_id" = "ensembl_gene_id")
+  ) %>%
+  dplyr::transmute(
+    gene_set = condition,
+    gene_id = entrezgene_id,
+    direction = if_else(log2FoldChange > 0, "up", "down")
+  ) %>%
+  mutate(
+    chunk = gene_set %>%
+      as.factor() %>%
+      as.integer() %>%
+      magrittr::divide_by_int(25)
+  ) %>%
+  split(.$chunk) %>%
+  map(
+    clueR::clue_gmt_from_df, drop_invalid = TRUE
+  )
+
+clue_jobs <- clue_gmt %>%
+  imap(
+    ~clueR::clue_query_submit(
+      .x[["up"]], .x[["down"]],
+      name = paste0("erk_", .y),
+      use_fast_tool = FALSE
+    )
+  )
+
+clue_result_files <- map_chr(
+  clue_jobs, clue_query_download
+)
+
+clue_results <- clue_result_files %>%
+  enframe("chunk", "result_path") %>%
+  crossing(
+    score_level = c("cell", "summary"),
+    result_type = c("pert", "pcl")
+  ) %>%
+  mutate(
+    data = pmap(
+      .,
+      function(result_path, score_level, result_type, ...)
+        clue_parse_result(
+          result_path, score_level = score_level, result_type = result_type,
+          score_type = "tau"
+        )
+    )
+  ) %>%
+  dplyr::select(-chunk, -result_path) %>%
+  unnest(data) %>%
+  # Extract target cell from pertubation id
+  mutate(
+    cell_id = if_else(
+      score_level == "cell" & result_type == "pcl",
+      str_split_fixed(id, fixed(":"), 2)[, 2],
+      cell_id
+    ),
+    id = if_else(
+      score_level == "cell" & result_type == "pcl",
+      str_split_fixed(id, fixed(":"), 2)[, 1],
+      cell_id
+    )
+  )
+
+write_csv(
+  clue_results,
+  file.path(wd, "clue_results_all_conditions.csv.gz")
+)
+
+# Submit four clusters
+
+
+clue_gmt <- tribble(
+  ~direction, ~class_name, ~sign,
+  "up", "bell", "-",
+  "down", "bell", "+",
+  "up", "full_range", "+",
+  "down", "full_range", "-",
+  "up", "high_erk", "+",
+  "down", "high_erk", "-",
+  "up", "low_erk", "-",
+  "down", "low_erk", "+"
+) %>%
+  mutate(class = paste(class_name, sign, sep = "_")) %>%
+  left_join(
+    function_clusters %>%
+      dplyr::select(gene_id, class = consensus),
+    by = "class"
+  ) %>%
+  inner_join(
+    surface_fit_p,
+    by = "gene_id"
+  ) %>%
+  arrange(class_name, direction, fdr_lratio) %>%
+  inner_join(
+    ensembl_gene_id_mapping_biomart,
+    by = c("gene_id" = "ensembl_gene_id")
+  ) %>%
+  dplyr::select(
+    gene_set = class_name,
+    gene_id = entrezgene_id,
+    direction
+  ) %>%
+  mutate(
+    chunk = gene_set %>%
+      as.factor() %>%
+      as.integer() %>%
+      magrittr::divide_by_int(25)
+  ) %>%
+  split(.$chunk) %>%
+  map(
+    clueR::clue_gmt_from_df, drop_invalid = TRUE
+  )
+
+clue_jobs <- clue_gmt %>%
+  imap(
+    ~clueR::clue_query_submit(
+      .x[["up"]], .x[["down"]],
+      name = paste0("erk_", .y),
+      use_fast_tool = FALSE
+    )
+  )
+
+clue_result_files <- map_chr(
+  clue_jobs, clue_query_download
+)
+
+clue_results <- clue_result_files %>%
+  enframe("chunk", "result_path") %>%
+  crossing(
+    score_level = c("cell", "summary"),
+    result_type = c("pert", "pcl")
+  ) %>%
+  mutate(
+    data = pmap(
+      .,
+      function(result_path, score_level, result_type, ...)
+        clue_parse_result(
+          result_path, score_level = score_level, result_type = result_type,
+          score_type = "tau"
+        )
+    )
+  ) %>%
+  dplyr::select(-chunk, -result_path) %>%
+  unnest(data) %>%
+  # Extract target cell from pertubation id
+  mutate(
+    cell_id = if_else(
+      score_level == "cell" & result_type == "pcl",
+      str_split_fixed(id, fixed(":"), 2)[, 2],
+      cell_id
+    ),
+    id = if_else(
+      score_level == "cell" & result_type == "pcl",
+      str_split_fixed(id, fixed(":"), 2)[, 1],
+      cell_id
+    )
+  )
+
+write_csv(
+  clue_results,
+  file.path(wd, "clue_results_consensus_clusters.csv.gz")
+)
+
+
+# Store to synapse -------------------------------------------------------------
+###############################################################################T
+
+activity <- Activity(
+  "Connectivity map query",
+  used = c(
+    "syn21576614",
+    "syn22686427",
+    "syn22800020"
+  ),
+  executed = "https://github.com/clemenshug/erk_senescence/blob/master/analysis/cluster_functional_enrichment.R"
+)
+
+syn_cmap <- synExtra::synMkdir("syn21432134", "functional_enrichment", "cmap", .recursive = TRUE)
+
+c(
+  file.path(wd, "clue_results_consensus_clusters.csv.gz"),
+  file.path(wd, "clue_results_all_conditions.csv.gz")
+) %>%
+  synStoreMany(syn_cmap, activity = activity)
+
+
 
 # EnrichR ----------------------------------------------------------------------
 ###############################################################################T
@@ -65,7 +326,7 @@ function_clusters_enrichr <- function_clusters %>%
 
 
 plot_heatmap_gg <- function(df, aesthetic = aes(class, term, fill = signed_p), facet_by = NULL, ...) {
-  browser()
+#  browser()
   facet_by_quo <- enquo(facet_by)
   abs_max <- df %>%
     pull(!!aesthetic[["fill"]]) %>%
@@ -77,10 +338,10 @@ plot_heatmap_gg <- function(df, aesthetic = aes(class, term, fill = signed_p), f
       !!aesthetic[["x"]],
       !!aesthetic[["y"]],
       !!aesthetic[["fill"]],
-      if (!is.null(facet_by)) quo_name(facet_by_quo) else NULL
+      !!facet_by_quo
     ) %>%
-    {if (!is.null(facet_by)) mutate(., !!aesthetic[["x"]] := paste(!!aesthetic[["x"]], !!facet_by_quo)) %>% dplyr::select(-!!facet_by_quo) else .} %>%
-    spread(!!aesthetic[["x"]], !!aesthetic[["fill"]]) %>%
+    {mutate(., !!aesthetic[["x"]] := paste(!!aesthetic[["x"]], !!facet_by_quo)) %>% dplyr::select(-!!facet_by_quo)} %>%
+    spread(!!aesthetic[["x"]], !!aesthetic[["fill"]], fill = 0) %>%
     column_to_rownames(quo_name(aesthetic[["y"]])) %>%
     as.matrix()
   row_clust <- hclust(dist(mat, method = "euclidian"), "ward.D2")
@@ -92,7 +353,8 @@ plot_heatmap_gg <- function(df, aesthetic = aes(class, term, fill = signed_p), f
     geom_raster() +
     facet_wrap(vars(direction)) +
     scale_fill_distiller(palette = "RdBu", limits = c(-abs_max, abs_max), oob = scales::squish) +
-    {if (!is.null(facet_by)) facet_wrap(vars(!!facet_by_quo)) else NULL}
+    facet_wrap(vars(!!facet_by_quo)) +
+    theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust = 1))
 }
 
 
@@ -197,8 +459,65 @@ plot_heatmap <- function(mat, ...) {
 # EnrichR heatmap --------------------------------------------------------------
 ###############################################################################T
 
+clusters_go_enrichr_plot_data <- function_clusters_enrichr %>%
+  unnest(enrichment) %>%
+  group_nest(algorithm) %>%
+  mutate(
+    data = map(
+      data,
+      ~.x %>%
+        mutate(
+          Term_combined = paste(str_sub(database, end = 4L), Term, sep = "_")
+        ) %>%
+        arrange(desc(Combined.Score)) %>%
+        filter(
+          Term_combined %in% (
+            c(
+              filter(., Adjusted.P.value <= 0.05) %>%
+                group_by(cluster) %>%
+                dplyr::slice(1:5) %>%
+                ungroup() %>%
+                pull(Term_combined),
+              filter(., Adjusted.P.value <= 0.05) %>%
+                pull(Term_combined)
+            ) %>%
+              unique() %>%
+              head(50)
+          )
+        ) %>%
+        mutate(
+          neg_log10_p = -log10(Adjusted.P.value)
+        ) %>%
+        inner_join(
+          cluster_names,
+          by = c("cluster" = "class_combined")
+        )
+    )
+  )
 
+clusters_go_enrichr_plots <- clusters_go_enrichr_plot_data %>%
+  mutate(
+    data = map(
+      data,
+      ~plot_heatmap_gg(
+        .x %>%
+          mutate(Combined.Score = log2(Combined.Score)),
+        aes(class_name, Term_combined, fill = Combined.Score), facet_by = NULL
+      )
+    )
+  )
 
+pwalk(
+  clusters_go_enrichr_plots,
+  function(algorithm, data, ...) {
+    ggsave(
+      file.path(wd, paste0("clusters_go_enrichr_heatmap_", algorithm, ".pdf")),
+      data +
+        ggtitle(algorithm),
+      width = 10, height = 12
+    )
+  }
+)
 
 # TopGO functions --------------------------------------------------------------
 ###############################################################################T
@@ -229,6 +548,16 @@ go_objects <- list(
   )
 )
 
+go_gene_mapping <- map(
+  go_objects,
+  ~usedGO(.x) %>%
+    {genesInTerm(.x, .)} %>%
+    enframe("id", "gene_id")
+) %>%
+  bind_rows() %>%
+  unchop(gene_id) %>%
+  genebabel::join_hgnc("gene_id", "ensembl_gene_id", c("symbol"))
+
 topgo_enrichment <- function(gene_set, all_genes, go_domain = "bp", ...) {
   gene_input <- set_names(
     if_else(all_genes %in% gene_set, 1, 0),
@@ -247,6 +576,14 @@ topgo_enrichment <- function(gene_set, all_genes, go_domain = "bp", ...) {
   #   algorithm = "weight01",
   #   statistic = "ks"
   # )
+  go_genes <- go_gene_mapping %>%
+    filter(gene_id %in% gene_set) %>%
+    group_by(id) %>%
+    summarize(
+      gene_symbols = paste(unique(symbol), collapse = "|"),
+      gene_ids = paste(unique(gene_id), collapse = "|")
+    ) %>%
+    ungroup()
   topGO::GenTable(
     GOdata,
     fisher = resultFisher,
@@ -258,11 +595,14 @@ topgo_enrichment <- function(gene_set, all_genes, go_domain = "bp", ...) {
   ) %>%
     as_tibble() %>%
     dplyr::rename(id = GO.ID, term = Term, pval = fisher, annotated = Annotated, significant = Significant) %>%
+    dplyr::left_join(
+      go_genes, by = "id"
+    ) %>%
     dplyr::mutate_at(vars(pval), ~as.numeric(gsub("< 1e-30", "1e-30", .x)))
 }
 
 surface_fit_go <- topgo_enrichment(
-  function_clusters$gene_id, all_genes, "bp"
+  unique(function_clusters$gene_id), all_genes, "bp"
 )
 
 # topGO on function clusters ---------------------------------------------------
@@ -272,6 +612,7 @@ plan(multisession(workers = 6))
 function_clusters_topgo <- function_clusters %>%
   dplyr::select(-consensus_n) %>%
   gather("algorithm", "cluster", -gene_id, -gene_name) %>%
+  filter(algorithm == "consensus") %>%
   group_nest(algorithm, cluster) %>%
   crossing(go_domain = c("bp", "mf")) %>%
   mutate(
@@ -281,7 +622,6 @@ function_clusters_topgo <- function_clusters %>%
       .progress = TRUE
     )
   )
-
 
 function_clusters_topgo_df <- function_clusters_topgo %>%
   dplyr::select(-data) %>%
@@ -305,6 +645,11 @@ function_clusters_topgo_df <- function_clusters_topgo %>%
   ) %>%
   ungroup()
 
+write_csv(
+  function_clusters_topgo_df,
+  file.path(wd, paste("consensus_clusters_topgo_enrichment_table.csv"))
+)
+
 function_clusters_topgo_mat <- function_clusters_topgo_df %>%
   inner_join(cluster_names, by = c("cluster" = "class_combined")) %>%
   transmute(
@@ -324,7 +669,6 @@ function_clusters_topgo_mat <- function_clusters_topgo_df %>%
     )
   )
 
-
 function_clusters_topgo_hm <- function_clusters_topgo_mat %>%
   mutate(
     data = map(data, plot_heatmap)
@@ -339,7 +683,6 @@ pwalk(
     )
   }
 )
-
 
 # topGO on time series induction -----------------------------------------------
 ###############################################################################T
@@ -553,6 +896,10 @@ high_low_clusters_go_plot_data <- high_low_clusters_go %>%
     )
   )
 
+high_low_clusters_go_plot_data %>%
+  unnest(data) %>%
+  arrange(pval) %>%
+  write_csv(file.path(wd, "high_low_erk_temporal_go_enrichment_top.csv"))
 
 high_low_clusters_go_plot <- high_low_clusters_go_plot_data %>%
   mutate(
@@ -657,10 +1004,10 @@ high_low_clusters_go_enrichr_plot <- high_low_clusters_go_enrichr_plot_data %>%
   )
 
 pwalk(
-  high_low_clusters_go_plot,
+  high_low_clusters_go_enrichr_plot,
   function(high_low, data, ...) {
     ggsave(
-      file.path(wd, paste0("high_low_temporal_ordering_go_heatmap", high_low, ".pdf")),
+      file.path(wd, paste0("high_low_temporal_ordering_go_enrichr_heatmap", high_low, ".pdf")),
       data +
         ggtitle(high_low)
     )
