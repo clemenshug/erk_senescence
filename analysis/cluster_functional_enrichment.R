@@ -157,20 +157,7 @@ clue_results <- clue_result_files %>%
     )
   ) %>%
   dplyr::select(-chunk, -result_path) %>%
-  unnest(data) %>%
-  # Extract target cell from pertubation id
-  mutate(
-    cell_id = if_else(
-      score_level == "cell" & result_type == "pcl",
-      str_split_fixed(id, fixed(":"), 2)[, 2],
-      cell_id
-    ),
-    id = if_else(
-      score_level == "cell" & result_type == "pcl",
-      str_split_fixed(id, fixed(":"), 2)[, 1],
-      cell_id
-    )
-  )
+  unnest(data)
 
 write_csv(
   clue_results,
@@ -252,20 +239,7 @@ clue_results <- clue_result_files %>%
     )
   ) %>%
   dplyr::select(-chunk, -result_path) %>%
-  unnest(data) %>%
-  # Extract target cell from pertubation id
-  mutate(
-    cell_id = if_else(
-      score_level == "cell" & result_type == "pcl",
-      str_split_fixed(id, fixed(":"), 2)[, 2],
-      cell_id
-    ),
-    id = if_else(
-      score_level == "cell" & result_type == "pcl",
-      str_split_fixed(id, fixed(":"), 2)[, 1],
-      cell_id
-    )
-  )
+  unnest(data)
 
 write_csv(
   clue_results,
