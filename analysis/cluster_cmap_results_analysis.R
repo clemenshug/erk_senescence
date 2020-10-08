@@ -42,24 +42,22 @@ cmap_results_consensus_clusters <- syn("syn22976162") %>%
 pertubation_meta <- syn("syn21547097") %>%
   read_csv()
 
+pca_values <- syn("syn21444456") %>%
+
 # Plotting CMap heatmaps -------------------------------------------------------
 ###############################################################################T
 
 cmap_results_cleaned <- cmap_results_consensus_clusters %>%
   mutate(
-    pert_id = if_else(is.na(pert_id), id, pert_id),
-    pert_type = if_else(is.na(pert_type), "pert_pcl", pert_type),
-    cell_id = if_else(is.na(cell_id), "summary", cell_id),
     col_id = paste(gene_set, cell_id, sep = "_")
-  ) %>%
-  drop_na(pert_id)
+  )
 
 pertubation_meta_cleaned <- pertubation_meta %>%
   distinct(pert_id, pert_iname, pert_type) %>%
   bind_rows(
     cmap_results_consensus_clusters %>%
       filter(result_type == "pcl") %>%
-      mutate(pert_id = id, pert_iname = id, pert_type = "pert_pcl") %>%
+      mutate(pert_id = id, pert_iname = id, pert_type = "pcl") %>%
       distinct(pert_id, pert_iname, pert_type)
   )
 
@@ -79,7 +77,10 @@ plot_cmap_heatmap <- function(
     # group_by(gene_set, direction) %>%
     group_by(col_id) %>%
     slice(1:25) %>%
-    pull(pert_id)
+    pull(pert_id),
+  row_order = NULL,
+  col_order = NULL,
+  ...
 ) {
   # browser()
   hm_data <- data %>%
@@ -93,22 +94,19 @@ plot_cmap_heatmap <- function(
     ) %>%
     pivot_wider(id_cols = pert_id, names_from = col_id, values_from = tau)
 
-  row_annotation_data <- pertubation_meta_cleaned %>%
-    slice(match(hm_data[["pert_id"]], pert_id)) %>%
-    mutate(
-      name = paste(pert_iname, pert_type, sep = "_")
-    )
-
-  col_annotation_data <- data %>%
-    distinct(col_id, gene_set, cell_id) %>%
-    slice(match(colnames(hm_data), col_id))
-
   cmap_colormap <- circlize::colorRamp2(
     c(-100, -80, 80, 100),
     colors = c("#0000FF", "#FFFFFF", "#FFFFFF", "#FF0000"),
     space = "RGB"
   )
-  # browser()
+
+  row_annotation_data <- pertubation_meta_cleaned %>%
+    mutate(
+      name = paste(pert_iname, pert_type, sep = "_")
+    )
+
+  col_annotation_data <- data %>%
+    distinct(col_id, gene_set, cell_id)
 
   hm_matrix <- hm_data %>%
     left_join(
@@ -116,6 +114,15 @@ plot_cmap_heatmap <- function(
       by = "pert_id"
     ) %>%
     select(-pert_id) %>%
+    # In rare cases two measurements for same pertubations, averaging
+    group_by(name) %>%
+    {
+      d <- group_data(.)
+      l <- map_int(d[[".rows"]], length)
+      if (any(l > 1))
+        warning("Pertubations with more than one measurement:", paste(d[["name"]][l > 1], collapse = ", "))
+      summarize(., across(.fns = mean))
+    } %>%
     column_to_rownames("name") %>%
     as.matrix()
 
@@ -125,8 +132,31 @@ plot_cmap_heatmap <- function(
 
   # browser()
 
-  col_cluster <- hcluster(hm_matrix_imputed)
-  row_cluster <- hcluster(t(hm_matrix_imputed))
+  if (is.null(col_order))
+    col_cluster <- hcluster(hm_matrix_imputed)
+  else {
+    col_cluster <- FALSE
+    hm_matrix <- hm_matrix[, col_order]
+  }
+  if (is.null(row_order))
+    row_cluster <- hcluster(t(hm_matrix_imputed))
+  else {
+    row_cluster = FALSE
+    hm_matrix <- hm_matrix[col_order, ]
+  }
+
+  # browser()
+
+  row_annotation_data <- row_annotation_data %>%
+    slice(match(rownames(hm_matrix), name))
+
+  col_annotation_data <- col_annotation_data %>%
+    slice(match(colnames(hm_matrix), col_id)) %>%
+    inner_join(
+      select(condition_meta, condition, Time, ERKi, DOX),
+      by = c("gene_set" = "condition")
+    ) %>%
+    select(cell_id, Time, ERKi, DOX)
 
   Heatmap(
     hm_matrix,
@@ -138,10 +168,12 @@ plot_cmap_heatmap <- function(
       `Pertubation type` = row_annotation_data[["pert_type"]]
     ),
     top_annotation = columnAnnotation(
-      `Cell type` = col_annotation_data[["cell_id"]]
+      df = col_annotation_data %>%
+        as.data.frame()
     ),
     col = cmap_colormap,
-    name = "Tau"
+    name = "Tau",
+    ...
   )
 }
 
@@ -149,13 +181,234 @@ heatmap_pcl_cp_oe_sh_top_per_condition <- plot_cmap_heatmap(
   cmap_results_cleaned %>%
     filter(
       cell_id %in% c("A375", "summary"),
-      pert_type %in% c("pert_pcl", "trt_cp", "trt_oe", "trt_sh.cgs")
-    )
+      pert_type %in% c("pcl", "trt_cp", "trt_oe", "trt_sh.cgs")
+    ),
+  . %>%
+    mutate(direction = if_else(tau > 0, "correlated", "anti-correlated")) %>%
+    arrange(desc(abs(tau))) %>%
+    # group_by(gene_set, direction) %>%
+    group_by(col_id) %>%
+    slice(1:10) %>%
+    pull(pert_id)
 )
 
+cmap_results_all_conditions_cleaned <- cmap_results_all_conditions %>%
+  mutate(
+    col_id = paste(gene_set, cell_id, sep = "_")
+  )
+
+heatmap_pcl_cp_oe_sh_top10_per_tp_24h_all <- cmap_results_all_conditions_cleaned %>%
+  filter(
+    gene_set %in% {
+      condition_meta %>%
+        filter(Time == 24) %>%
+        pull(condition)
+    },
+    cell_id %in% c("A375", "summary"),
+    pert_type %in% c("pcl", "trt_cp", "trt_oe", "trt_sh.cgs")
+  ) %>%
+  plot_cmap_heatmap(
+    . %>%
+      mutate(direction = if_else(tau > 0, "correlated", "anti-correlated")) %>%
+      arrange(desc(abs(tau))) %>%
+      # group_by(gene_set, direction) %>%
+      group_by(col_id) %>%
+      slice(1:10) %>%
+      pull(pert_id),
+    col_order = distinct(., condition = gene_set, cell_id, col_id) %>%
+      inner_join(select(pca_values, condition, PC1), by = "condition") %>%
+      arrange(cell_id, PC1) %>%
+      pull(col_id)
+  )
+
 with_pdf(
-  file.path(wd, "cmap_results_heatmap__pcl_cp_oe_sh_top_per_condition.pdf"),
-  width = 5,
-  height = 15,
-  print(hm)
+  file.path(wd, "cmap_results_heatmap_pcl_cp_oe_sh_top10_per_tp_24h_all.pdf"),
+  width = 8,
+  height = 17,
+  print(heatmap_pcl_cp_oe_sh_top10_per_tp_24h_all)
+)
+
+
+heatmap_pcl_cp_oe_sh_top10_dox1_time24 <- cmap_results_all_conditions_cleaned %>%
+  filter(
+    gene_set %in% {
+      condition_meta %>%
+        filter(Time == 24, DOX == 1) %>%
+        pull(condition)
+    },
+    cell_id %in% c("A375", "summary"),
+    pert_type %in% c("pcl", "trt_cp", "trt_oe", "trt_sh.cgs")
+  ) %>%
+  plot_cmap_heatmap(
+    . %>%
+      mutate(direction = if_else(tau > 0, "correlated", "anti-correlated")) %>%
+      arrange(desc(abs(tau))) %>%
+      # group_by(gene_set, direction) %>%
+      group_by(col_id) %>%
+      slice(1:10) %>%
+      pull(pert_id),
+    col_order = distinct(., condition = gene_set, cell_id, col_id) %>%
+      inner_join(select(pca_values, condition, PC1), by = "condition") %>%
+      arrange(cell_id, PC1) %>%
+      pull(col_id)
+  )
+
+with_pdf(
+  file.path(wd, "cmap_results_heatmap_pcl_cp_oe_sh_top10_dox1_time24.pdf"),
+  width = 8,
+  height = 17,
+  print(heatmap_pcl_cp_oe_sh_top10_dox1_time24)
+)
+
+heatmap_pcl_cp_oe_sh_top10_dox0_time24 <- cmap_results_all_conditions_cleaned %>%
+  filter(
+    gene_set %in% {
+      condition_meta %>%
+        filter(Time == 24, DOX == 0) %>%
+        pull(condition)
+    },
+    cell_id %in% c("A375", "summary"),
+    pert_type %in% c("pcl", "trt_cp", "trt_oe", "trt_sh.cgs")
+  ) %>%
+  plot_cmap_heatmap(
+    . %>%
+      mutate(direction = if_else(tau > 0, "correlated", "anti-correlated")) %>%
+      arrange(desc(abs(tau))) %>%
+      # group_by(gene_set, direction) %>%
+      group_by(col_id) %>%
+      slice(1:10) %>%
+      pull(pert_id),
+    col_order = distinct(., condition = gene_set, cell_id, col_id) %>%
+      inner_join(select(pca_values, condition, PC1), by = "condition") %>%
+      arrange(cell_id, PC1) %>%
+      pull(col_id)
+  )
+
+with_pdf(
+  file.path(wd, "cmap_results_heatmap_pcl_cp_oe_sh_top10_dox0_time24.pdf"),
+  width = 8,
+  height = 17,
+  print(heatmap_pcl_cp_oe_sh_top10_dox0_time24)
+)
+
+
+heatmap_pcl_cp_oe_sh_top10_dox1_ERK0 <- cmap_results_all_conditions_cleaned %>%
+  filter(
+    gene_set %in% {
+      condition_meta %>%
+        filter(DOX == 1, ERKi == 0) %>%
+        pull(condition)
+    },
+    cell_id %in% c("A375", "summary"),
+    pert_type %in% c("pcl", "trt_cp", "trt_oe", "trt_sh.cgs")
+  ) %>%
+  plot_cmap_heatmap(
+    . %>%
+      mutate(direction = if_else(tau > 0, "correlated", "anti-correlated")) %>%
+      arrange(desc(abs(tau))) %>%
+      # group_by(gene_set, direction) %>%
+      group_by(col_id) %>%
+      slice(1:10) %>%
+      pull(pert_id),
+    col_order = distinct(., condition = gene_set, cell_id, col_id) %>%
+      inner_join(select(pca_values, condition, PC1), by = "condition") %>%
+      inner_join(condition_meta, by = "condition") %>%
+      arrange(cell_id, Time) %>%
+      pull(col_id)
+  )
+
+with_pdf(
+  file.path(wd, "cmap_results_heatmap_pcl_cp_oe_sh_top10_dox1_ERK0.pdf"),
+  width = 8,
+  height = 17,
+  print(heatmap_pcl_cp_oe_sh_top10_dox1_ERK0)
+)
+
+heatmap_pcl_cp_oe_sh_top10_dox1_ERK1000 <- cmap_results_all_conditions_cleaned %>%
+  filter(
+    gene_set %in% {
+      condition_meta %>%
+        filter(DOX == 1, ERKi == 1000) %>%
+        pull(condition)
+    },
+    cell_id %in% c("A375", "summary"),
+    pert_type %in% c("pcl", "trt_cp", "trt_oe", "trt_sh.cgs")
+  ) %>%
+  plot_cmap_heatmap(
+    . %>%
+      mutate(direction = if_else(tau > 0, "correlated", "anti-correlated")) %>%
+      arrange(desc(abs(tau))) %>%
+      # group_by(gene_set, direction) %>%
+      group_by(col_id) %>%
+      slice(1:10) %>%
+      pull(pert_id),
+    col_order = distinct(., condition = gene_set, cell_id, col_id) %>%
+      inner_join(select(pca_values, condition, PC1), by = "condition") %>%
+      inner_join(condition_meta, by = "condition") %>%
+      arrange(cell_id, Time) %>%
+      pull(col_id)
+  )
+
+with_pdf(
+  file.path(wd, "cmap_results_hheatmap_pcl_cp_oe_sh_top10_dox1_ERK1000.pdf"),
+  width = 8,
+  height = 17,
+  print(heatmap_pcl_cp_oe_sh_top10_dox1_ERK1000)
+)
+
+
+heatmap_pcl_cp_oe_sh_top10_all_lol <- cmap_results_all_conditions_cleaned %>%
+  filter(
+    gene_set %in% {
+      condition_meta %>%
+        filter(DOX == 1) %>%
+        pull(condition)
+    },
+    cell_id %in% c("A375", "summary"),
+    pert_type %in% c("pcl", "trt_cp", "trt_oe", "trt_sh.cgs")
+  ) %>%
+  plot_cmap_heatmap(
+    . %>%
+      mutate(direction = if_else(tau > 0, "correlated", "anti-correlated")) %>%
+      arrange(desc(abs(tau))) %>%
+      # group_by(gene_set, direction) %>%
+      group_by(col_id) %>%
+      slice(1:10) %>%
+      pull(pert_id),
+    col_order = distinct(., condition = gene_set, cell_id, col_id) %>%
+      # inner_join(select(pca_values, condition, PC1), by = "condition") %>%
+      inner_join(condition_meta, by = "condition") %>%
+      inner_join(
+        pca_values %>%
+          select(condition, PC1) %>%
+          inner_join(condition_meta, by = "condition") %>%
+          filter(Time == 24) %>%
+          select(ERKi, DOX, PC1),
+        by = c("ERKi", "DOX")
+      ) %>%
+      arrange(cell_id, PC1, Time) %>%
+      pull(col_id),
+    column_split = distinct(., condition = gene_set, cell_id, col_id) %>%
+      # inner_join(select(pca_values, condition, PC1), by = "condition") %>%
+      inner_join(condition_meta, by = "condition") %>%
+      inner_join(
+        pca_values %>%
+          select(condition, PC1) %>%
+          inner_join(condition_meta, by = "condition") %>%
+          filter(Time == 24) %>%
+          select(ERKi, DOX, PC1),
+        by = c("ERKi", "DOX")
+      ) %>%
+      arrange(cell_id, PC1, Time) %>%
+      mutate(x = paste(cell_id, PC1)) %>%
+      pull(x),
+    column_gap = unit(0, "mm"), border = TRUE
+  )
+
+
+with_pdf(
+  file.path(wd, "cmap_results_hheatmap_pcl_cp_oe_sh_top10_all_lol.pdf"),
+  width = 15,
+  height = 50,
+  print(heatmap_pcl_cp_oe_sh_top10_all_lol)
 )
