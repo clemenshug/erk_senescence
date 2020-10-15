@@ -43,6 +43,7 @@ pertubation_meta <- syn("syn21547097") %>%
   read_csv()
 
 pca_values <- syn("syn21444456") %>%
+  read_csv()
 
 # Plotting CMap heatmaps -------------------------------------------------------
 ###############################################################################T
@@ -151,11 +152,11 @@ plot_cmap_heatmap <- function(
     slice(match(rownames(hm_matrix), name))
 
   col_annotation_data <- col_annotation_data %>%
-    slice(match(colnames(hm_matrix), col_id)) %>%
     inner_join(
       select(condition_meta, condition, Time, ERKi, DOX),
       by = c("gene_set" = "condition")
     ) %>%
+    slice(match(colnames(hm_matrix), col_id)) %>%
     select(cell_id, Time, ERKi, DOX)
 
   Heatmap(
@@ -402,7 +403,8 @@ heatmap_pcl_cp_oe_sh_top10_all_lol <- cmap_results_all_conditions_cleaned %>%
       arrange(cell_id, PC1, Time) %>%
       mutate(x = paste(cell_id, PC1)) %>%
       pull(x),
-    column_gap = unit(0, "mm"), border = TRUE
+    column_gap = unit(0, "mm"), border = TRUE,
+    column_title = NULL
   )
 
 
@@ -411,4 +413,121 @@ with_pdf(
   width = 15,
   height = 50,
   print(heatmap_pcl_cp_oe_sh_top10_all_lol)
+)
+
+
+heatmap_pcl_cp_oe_sh_top10_all_dose_response_lol <- cmap_results_all_conditions_cleaned %>%
+  filter(
+    gene_set %in% {
+      condition_meta %>%
+        filter(DOX == 1) %>%
+        pull(condition)
+    },
+    cell_id %in% c("A375", "summary"),
+    pert_type %in% c("pcl", "trt_cp", "trt_oe", "trt_sh.cgs")
+  ) %>%
+  plot_cmap_heatmap(
+    . %>%
+      mutate(direction = if_else(tau > 0, "correlated", "anti-correlated")) %>%
+      arrange(desc(abs(tau))) %>%
+      # group_by(gene_set, direction) %>%
+      group_by(col_id) %>%
+      slice(1:10) %>%
+      pull(pert_id),
+    col_order = distinct(., condition = gene_set, cell_id, col_id) %>%
+      # inner_join(select(pca_values, condition, PC1), by = "condition") %>%
+      inner_join(condition_meta, by = "condition") %>%
+      inner_join(
+        pca_values %>%
+          select(condition, PC1) %>%
+          inner_join(condition_meta, by = "condition") %>%
+          filter(Time == 24) %>%
+          select(ERKi, DOX, PC1),
+        by = c("ERKi", "DOX")
+      ) %>%
+      arrange(cell_id, Time, PC1) %>%
+      pull(col_id),
+    column_split = distinct(., condition = gene_set, cell_id, col_id) %>%
+      # inner_join(select(pca_values, condition, PC1), by = "condition") %>%
+      inner_join(condition_meta, by = "condition") %>%
+      inner_join(
+        pca_values %>%
+          select(condition, PC1) %>%
+          inner_join(condition_meta, by = "condition") %>%
+          filter(Time == 24) %>%
+          select(ERKi, DOX, PC1),
+        by = c("ERKi", "DOX")
+      ) %>%
+      arrange(cell_id, Time, PC1) %>%
+      mutate(x = paste(cell_id, Time)) %>%
+      pull(x) %>%
+      fct_inorder(),
+    column_gap = unit(0, "mm"), border = TRUE,
+    column_title = NULL
+  )
+
+
+with_pdf(
+  file.path(wd, "cmap_results_hheatmap_pcl_cp_oe_sh_top10_all_dose_response_lol.pdf"),
+  width = 15,
+  height = 50,
+  print(heatmap_pcl_cp_oe_sh_top10_all_dose_response_lol)
+)
+
+heatmap_pcl_cp_oe_sh_top10_24h_pc1 <- cmap_results_all_conditions_cleaned %>%
+  filter(
+    gene_set %in% {
+      condition_meta %>%
+        filter(Time == 24) %>%
+        pull(condition)
+    },
+    cell_id %in% c("A375", "summary"),
+    pert_type %in% c("pcl", "trt_cp", "trt_oe", "trt_sh.cgs")
+  ) %>%
+  plot_cmap_heatmap(
+    . %>%
+      mutate(direction = if_else(tau > 0, "correlated", "anti-correlated")) %>%
+      arrange(desc(abs(tau))) %>%
+      # group_by(gene_set, direction) %>%
+      group_by(col_id) %>%
+      slice(1:10) %>%
+      pull(pert_id),
+    col_order = distinct(., condition = gene_set, cell_id, col_id) %>%
+      # inner_join(select(pca_values, condition, PC1), by = "condition") %>%
+      inner_join(condition_meta, by = "condition") %>%
+      inner_join(
+        pca_values %>%
+          select(condition, PC1) %>%
+          inner_join(condition_meta, by = "condition") %>%
+          filter(Time == 24) %>%
+          select(ERKi, DOX, PC1),
+        by = c("ERKi", "DOX")
+      ) %>%
+      arrange(cell_id, PC1) %>%
+      pull(col_id),
+    column_split = distinct(., condition = gene_set, cell_id, col_id) %>%
+      # inner_join(select(pca_values, condition, PC1), by = "condition") %>%
+      inner_join(condition_meta, by = "condition") %>%
+      inner_join(
+        pca_values %>%
+          select(condition, PC1) %>%
+          inner_join(condition_meta, by = "condition") %>%
+          filter(Time == 24) %>%
+          select(ERKi, DOX, PC1),
+        by = c("ERKi", "DOX")
+      ) %>%
+      arrange(cell_id, PC1) %>%
+      mutate(x = paste(cell_id)) %>%
+      pull(x) %>%
+      fct_inorder(),
+    column_gap = unit(0, "mm"), border = TRUE,
+    column_title = NULL
+  )
+
+
+with_pdf(
+  file.path(wd, "cmap_results_heatmap_pcl_cp_oe_sh_top10_24h_pc1.pdf"),
+  width = 8,
+  height = 20,
+  print(heatmap_pcl_cp_oe_sh_top10_24h_pc1)
 )
