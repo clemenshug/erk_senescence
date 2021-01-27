@@ -127,56 +127,23 @@ consensus_trajectories_data <- condition_meta %>%
     by = "condition"
   )
 
-consensus_trajectories_data %>%
-  filter(PC == "PC1", consensus == "full_range_-") %>%
-  group_by(condition, PC_value) %>%
-  summarize(avg = mean(log2_FC)) %>%
-  ungroup() %>%
-  ggplot(aes(PC_value, avg)) +
-    geom_line()
 
-
-cluster_overlap %>%
-  filter(consensus == "full_range_+") %>%
-  crossing(
-    condition_meta %>%
-      filter(Time == "24", condition != "time0dox0conc0") %>%
-      inner_join(
-        pca_values %>%
-          filter(PC %in% c("PC1", "PC2")),
-        by = "condition"
-      )
-  ) %>%
-  inner_join(
-    deseq_lfc_scaled,
-    by = c("gene_id", "gene_name", "condition")
-  ) %>%
-  filter(PC == "PC1", condition == "time24dox0conc0") %>%
-  View(
-
-
-  )
-%>%
-  group_by(condition, PC_value) %>%
-  summarize(avg = mean(log2_FC)) %>%
-  ungroup() %>%
-  arrange(PC_value)
+# Use different color scheme
+# So that there's no confusion
 
 consensus_trajectories_plot <- plot_cluster_trajectories(
   consensus_trajectories_data %>%
-    filter(!consensus %in% c("none", "no_response_0")),
+    filter(!consensus %in% c("none", "no_response_0")) %>%
+    mutate(consensus = cluster_names[consensus]),
   PC_value, log2_FC, condition, PC1_order, gene_id, PC, consensus,
   all_traces = TRUE, rescale_limits = 0.4
 ) +
   guides(color = FALSE)
 
-# Use different color scheme
-# So that there's no confusion
-
 ggsave(
   file.path(wd, "consensus_clusters_all_traces.pdf"),
   consensus_trajectories_plot,
-  width = 3, height = 10
+  width = 4, height = 12
 )
 
 

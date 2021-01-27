@@ -48,9 +48,31 @@ cluster_overlap <- cluster_algos %>%
     surface_fit %>%
       distinct(gene_id, gene_name),
     by = "gene_id"
-  ) %>%
-  spread(algorithm, cluster_combined) %>%
-  drop_na()
+  ) %>% {
+    inner_join(
+      spread(., algorithm, cluster_combined) %>%
+        drop_na(),
+      group_by(., gene_name, gene_id) %>%
+        summarize(
+          ctable = list(table(cluster_combined)),
+        ) %>%
+        ungroup() %>%
+        transmute(
+          gene_name, gene_id,
+          consensus = map(
+            ctable,
+            function(t) {
+              h <- order(t, decreasing = TRUE)[[1]]
+              if (t[[h]] < 2)
+                list(consensus = "none", consensus_n = NA_integer_)
+              else
+                list(consensus = names(t)[[h]], consensus_n = t[[h]])
+            }
+          )
+        )
+    )
+  } %>%
+  unnest_wider(consensus)
 
 write_csv(
   cluster_overlap,
@@ -58,10 +80,10 @@ write_csv(
 )
 
 cluster_overlap_venn <- cluster_overlap %>%
-  group_by_at(vars(3:5)) %>%
+  group_by_at(vars(3:6)) %>%
   summarize(n = n()) %>%
   ungroup() %>%
-  gather_set_data(1:3) %>%
+  gather_set_data(1:4) %>%
   ggplot(aes(x, id = id, split = y, value = n)) +
     geom_parallel_sets(aes(fill = k_medoids), alpha = 0.3, axis.width = 0.1) +
     geom_parallel_sets_axes(axis.width = 0.1) +

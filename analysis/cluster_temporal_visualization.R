@@ -259,6 +259,6 @@ scatter_mid_max <- temporal_ordering %>%
 
 ggsave(
   file.path(wd, "temporal_ordering_rank_erki_0_vs_erki_1000.pdf"),
-  scatter_mid_max, width = 12, height = 8
+  scatter_mid_max, width = 30, height = 8
 )
 

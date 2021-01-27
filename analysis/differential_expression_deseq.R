@@ -4,6 +4,10 @@ library(readxl)
 library(furrr)
 library(rtracklayer)
 
+synapser::synLogin()
+syn <- synExtra::synDownloader(here("tempdl"), followLink = TRUE)
+
+
 meta <- read_excel("DeepSeqMetatable_9_13_19.xlsx") %>%
   mutate(
     condition = paste0("time",Time,"dox",DOX) %>%
@@ -18,7 +22,8 @@ meta <- read_excel("DeepSeqMetatable_9_13_19.xlsx") %>%
     Sample_ID = paste0("S", as.integer(str_extract_all(Sample_ID, "[0-9]+")))
   )
 
-gene_map <- read_csv("GRCh38.97.genemap.csv")
+gene_map <- syn("syn21411554") %>%
+  read_csv()
 gene_map_protein_coding <- gene_map %>%
   filter(gene_biotype == "protein_coding")
 
@@ -55,12 +60,24 @@ all_results <- resultsNames(de) %>%
   map(as.data.frame) %>%
   map(rownames_to_column, "gene_id")
 
-all_results_tables <- all_results %>%
+all_results_table <- all_results %>%
   enframe("condition", "res") %>%
   mutate(
     condition = str_match(condition, "condition_all_(.+)_vs_time0dox0conc0")[, 2]
   ) %>%
-  unnest(res) %>%
+  unnest(res)
+
+write_csv(
+  all_results_table %>%
+    left_join(select(gene_map, gene_id, gene_name)),
+  file.path("deseq", paste0("deseq_pairwise_results", ".csv.gz"))
+)
+
+synStoreMany(
+  file.path("deseq", paste0("deseq_pairwise_results", ".csv.gz")), "syn21432177"
+)
+
+all_results_tables
   select(condition, gene_id, log2FoldChange, lfcSE, padj) %>%
   gather("variable", "value", log2FoldChange, lfcSE, padj) %>%
   group_nest(variable) %>%
