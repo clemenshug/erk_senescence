@@ -579,6 +579,12 @@ surface_fit_go <- topgo_enrichment(
   unique(function_clusters$gene_id), all_genes, "bp"
 )
 
+openxlsx::write.xlsx(
+  surface_fit_go %>%
+    arrange(pval),
+  file.path(wd, "top_go_results_surface_fit_genes.xlsx")
+)
+
 # topGO on function clusters ---------------------------------------------------
 ###############################################################################T
 
