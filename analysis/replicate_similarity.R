@@ -137,31 +137,39 @@ correlations <- deseq_pairwise %>%
   as_tibble() %>%
   magrittr::set_colnames(c("Sample_1", "Sample_2", "correlation"))
 
+openxlsx::write.xlsx(
+  correlations,
+  file.path(wd, "sample_pairwise_correlations_normalized_counts.xlsx")
+)
+
 meta_correlation <- meta %>%
   arrange(
     ERKi, Time, DOX, Repeat, replicate
   ) %>%
-  group_by(condition, Repeat) %>%
-  slice_head(n = 1) %>%
-  ungroup() %>%
-  transmute(
-    Sample_ID,
+  mutate(
     sample_name = paste0(condition, "_", replicate) %>%
       fct_inorder(),
-    condition
-  )
+    across(c(Sample_ID, condition), fct_inorder)
+  ) %>%
+  group_by(condition, Repeat) %>%
+  slice_head(n = 1) %>%
+  ungroup()
 
 correlation_heatmap_data <- correlations %>%
   inner_join(
     meta_correlation %>%
-      dplyr::rename(sample_name_1 = sample_name, condition_1 = condition),
+      # filter(DOX == 1) %>%
+      dplyr::select(Sample_ID, sample_name_1 = sample_name, condition_1 = condition),
     by = c("Sample_1" = "Sample_ID")
   ) %>%
   inner_join(
     meta_correlation %>%
-      dplyr::rename(sample_name_2 = sample_name, condition_2 = condition),
+      # filter(DOX == 1) %>%
+      dplyr::select(Sample_ID, sample_name_2 = sample_name, condition_2 = condition),
     by = c("Sample_2" = "Sample_ID")
-  )
+  ) %>%
+  mutate(across(where(is.factor), fct_drop)) %>%
+  arrange(condition_1, condition_2, sample_name_1, sample_name_2)
 
 correlation_heatmap <- correlation_heatmap_data %>%
   ggplot(
@@ -192,6 +200,123 @@ correlation_heatmap <- correlation_heatmap_data %>%
   )
 
 ggsave("correlation_heatmap.pdf", correlation_heatmap, width = 15, height = 12)
+
+
+# Heatmap with ComplexHeatmap so we can show time and ERKi concentration
+
+meta_correlation <- meta %>%
+  arrange(
+    ERKi, Time, DOX, Repeat, replicate
+  ) %>%
+  filter(DOX == 1) %>%
+  mutate(
+    sample_name = paste0(condition, "_", replicate) %>%
+      fct_inorder(),
+    across(c(Sample_ID, condition), fct_inorder)
+  ) %>%
+  group_by(condition, Repeat) %>%
+  slice_head(n = 1) %>%
+  ungroup()
+
+
+annotation_col <- HeatmapAnnotation(
+  df = meta_correlation %>%
+    select(ERKi, Time) %>%
+    mutate(across(.fns = ~fct_inorder(as.character(.x)))) %>%
+    as.data.frame(),
+  a = anno_empty(border = FALSE, height = unit(5, "points")),
+  col = list(
+    ERKi = unique(meta_correlation[["ERKi"]]) %>% {
+      set_names(
+        viridisLite::viridis(n = length(.), direction = -1),
+        .
+      )
+    },
+    Time = unique(meta_correlation[["Time"]]) %>% {
+      set_names(
+        viridisLite::magma(n = length(.), direction = -1),
+        .
+      )
+    }
+  )
+)
+
+annotation_row <- HeatmapAnnotation(
+  df = meta_correlation %>%
+    select(ERKi, Time) %>%
+    mutate(across(.fns = ~fct_inorder(as.character(.x)))) %>%
+    as.data.frame(),
+  a = anno_empty(border = FALSE, width = unit(5, "points")),
+  col = list(
+    ERKi = unique(meta_correlation[["ERKi"]]) %>% {
+      set_names(
+        viridisLite::viridis(n = length(.), direction = -1),
+        .
+      )
+    },
+    Time = unique(meta_correlation[["Time"]]) %>% {
+      set_names(
+        viridisLite::magma(n = length(.), direction = -1),
+        .
+      )
+    }
+  ),
+  which = "row",
+  show_legend = FALSE
+)
+
+correlation_heatmap_data <- correlations %>%
+  inner_join(
+    meta_correlation %>%
+      filter(DOX == 1) %>%
+      dplyr::select(Sample_ID, sample_name_1 = sample_name, condition_1 = condition),
+    by = c("Sample_1" = "Sample_ID")
+  ) %>%
+  inner_join(
+    meta_correlation %>%
+      filter(DOX == 1) %>%
+      dplyr::select(Sample_ID, sample_name_2 = sample_name, condition_2 = condition),
+    by = c("Sample_2" = "Sample_ID")
+  ) %>%
+  mutate(across(where(is.factor), fct_drop)) %>%
+  arrange(condition_1, condition_2, sample_name_1, sample_name_2)
+
+
+complex_correlation_heatmap <- correlation_heatmap_data %>%
+  mutate(correlation = pmax(correlation, 0.90)) %>%
+  pivot_wider(id_cols = c("Sample_1"), names_from = "Sample_2", values_from = "correlation") %>%
+  column_to_rownames("Sample_1") %>%
+  as.matrix() %>%
+  magrittr::set_colnames(NULL) %>%
+  magrittr::set_rownames(NULL) %>%
+  Heatmap(
+    col = viridis::viridis(100, direction = -1),
+    cluster_rows = FALSE,
+    cluster_columns = FALSE,
+    row_split = meta_correlation[["condition"]],
+    column_split = meta_correlation[["condition"]],
+    row_gap = unit(2, "points"),
+    column_gap = unit(2, "points"),
+    # border = TRUE,
+    show_row_names = FALSE,
+    show_column_names = FALSE,
+    top_annotation = annotation_col,
+    left_annotation = annotation_row,
+    row_title = NULL,
+    column_title = NULL,
+    heatmap_legend_param = list(title = "Correlation")
+  )
+
+withr::with_pdf(
+  file.path(wd, "correlation_heatmap_annotation_with_gap.pdf"),
+  draw(complex_correlation_heatmap),
+  width = 15, height = 12
+)
+
+
+# Pairwise cross-correlation ---------------------------------------------------
+###############################################################################T
+
 
 correlations <- deseq_pairwise %>%
   counts(normalized = TRUE) %>%
