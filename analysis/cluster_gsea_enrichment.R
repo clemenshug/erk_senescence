@@ -147,8 +147,10 @@ fisher_enrich <- function(
   significant_symbols, gene_set_symbols, gene_universe
 ){
   fisher_table <- table(
-    significant_gene = gene_universe %in% significant_symbols,
-    gene_set_gene = gene_universe %in% gene_set_symbols
+    significant_gene = gene_universe %in% significant_symbols %>%
+      factor(levels = c("TRUE", "FALSE")),
+    gene_set_gene = gene_universe %in% gene_set_symbols %>%
+      factor(levels = c("TRUE", "FALSE"))
   )
   fisher_res <- fisher_table %>%
     fisher.test(
@@ -382,3 +384,52 @@ x <- msigdbr_fisher_res %>%
   BPPARAM = parallel_param,
   scoreType = "pos"
 )
+
+# All gene sets in msigdb ------------------------------------------------------
+###############################################################################T
+
+msigdbr_of_interest <- all_msigdbr %>%
+  filter(
+    gs_cat %in% c("H", "C2", "C5")
+  )
+
+msigdb_enrichment_surface_fit <- msigdbr_of_interest %>%
+  group_by(gs_cat, gs_subcat, gs_name, gs_description) %>%
+  summarize(
+    fisher = fisher_enrich(
+      surface_p_clean %>%
+        filter(significant) %>%
+        pull(gene_name),
+      human_gene_symbol,
+      surface_p_clean %>%
+        pull(gene_name)
+    ) %>%
+      list()
+  ) %>%
+  ungroup()
+
+msigdb_enrichment_surface_fit_table <- msigdb_enrichment_surface_fit %>%
+  mutate(
+    fisher = map(fisher, "fisher_res")
+  ) %>%
+  unnest(fisher)
+
+msigdb_enrichment_surface_fit_selected <- msigdb_enrichment_surface_fit_table %>%
+  filter(
+    (str_starts(gs_subcat, fixed("CP")) & gs_cat == "C2") |
+      (gs_cat == "C5" & gs_subcat != "HPO") |
+      gs_cat == "H"
+  )
+
+msigdb_enrichment_surface_fit_selected <- msigdb_enrichment_surface_fit_table %>%
+  filter(
+    (str_starts(gs_subcat, fixed("CP")) & gs_cat == "C2")
+  )
+
+openxlsx::write.xlsx(
+  msigdb_enrichment_surface_fit_table %>%
+    select(gs_cat, gs_subcat, gs_name, everything()) %>%
+    arrange(p.value),
+  file.path(wd, "fisher_msigdbr_enrichment_table.xlsx")
+)
+
