@@ -26,6 +26,11 @@ temporal_lfc <- syn("syn25278592") %>%
 temporal_lfc_rescaled <- syn("syn25278596") %>%
   read_csv()
 
+temporal_lfc_all_stats <- syn("syn25278963") %>%
+  read_csv(
+    col_types = list(ERKi = col_character())
+  )
+
 meta <- syn("syn21432975") %>%
   read_csv()
 
@@ -63,6 +68,14 @@ cluster_names <- syn("syn21567677") %>%
     direction = factor(direction, levels = c("upregulated", "downregulated"))
   )
 
+theme_set(
+  theme_minimal(base_family = "Helvetica") +
+    theme(
+      strip.text = element_text(size = rel(1)),
+      text = element_text(face = "plain")
+    )
+)
+
 # Visualize interaction of dose and time clusters ------------------------------
 ###############################################################################T
 
@@ -85,6 +98,21 @@ time_dose_clusters <- temporal_ordering %>%
   ) %>%
   arrange(mid_induction_time) %>%
   mutate(across(mid_induction_time, . %>% as.character() %>% fct_inorder()))
+
+temporal_lfc_rescaled_with_clusters <- temporal_lfc_all_stats %>%
+  inner_join(
+    dose_clusters %>%
+      select(
+        gene_id, gene_name, dose_cluster = k_medoids
+      ),
+    by = c("gene_id", "gene_name")
+  ) %>%
+  inner_join(
+    cluster_names %>%
+      select(dose_cluster = class_combined, dose_cluster_name_combined = combined,
+             dose_cluster_direction = direction, dose_cluster_name = class_name),
+    by = c("dose_cluster")
+  )
 
 time_dose_clusters_plot <- time_dose_clusters %>%
   ggplot(
@@ -121,7 +149,7 @@ cowplot::ggsave2(
 
 
 time_dose_clusters <- temporal_ordering %>%
-  filter(directed == "directed", ERKi %in% c("all", "0", "1000")) %>%
+  filter(directed == "absolute", ERKi %in% c("all", "0", "1000")) %>%
   select(ERKi, gene_id, max_induction_time, mid_induction_time) %>%
   pivot_longer(ends_with("induction_time"), names_to = "method", values_to = "time") %>%
   inner_join(
@@ -135,6 +163,8 @@ time_dose_clusters <- temporal_ordering %>%
   ) %>%
   arrange(time) %>%
   mutate(across(time, . %>% as.character() %>% fct_inorder()))
+
+
 
 time_dose_clusters_plot <- time_dose_clusters %>%
   ggplot(
@@ -237,22 +267,25 @@ time_dose_clusters_plot <- time_dose_clusters %>%
     # axis.text = element_text(face = "bold"),
     axis.text.x = element_text(angle = 45, hjust = 0.5, vjust = 0.5)
   ) +
-  labs(x = "Cluster", y = "Proportion", fill = "Time")
+  labs(x = "Dose-response behavior", y = "Proportion", fill = "Time")
 
 cowplot::ggsave2(
-  file.path(wd, "time_dose_clusters_barplot_by_class_with_direction_only_all.pdf"),
+  file.path(wd, "time_dose_clusters_barplot_by_class_with_direction_only_all_.pdf"),
   time_dose_clusters_plot, width = 4, height = 3.5
 )
 
 
-time_dose_clusters_plot <- time_dose_clusters %>%
-  filter(method == "mid_induction_time", ERKi == "all") %>%
-  inner_join(
-    cluster_names,
-    by = c("dose_class" = "class_combined")
+time_dose_clusters_plot <- temporal_lfc_rescaled_with_clusters %>%
+  mutate(
+    across(
+      c(mid_induction_time),
+      . %>%
+        factor(., levels = as.character(sort(unique(.))))
+    )
   ) %>%
+  filter(ERKi == "all", directed == "absolute", log2FoldChange_range_erki > 1) %>%
   ggplot(
-    aes(class_name, fill = time, label = stat(count))
+    aes(dose_cluster_name, fill = mid_induction_time, label = stat(count))
   ) +
   geom_bar(
     position = "fill",
@@ -264,7 +297,7 @@ time_dose_clusters_plot <- time_dose_clusters %>%
   #   position = position_dodge(),
   #   stat = "count"
   # ) +
-  facet_wrap(~direction, nrow = 1L) +
+  facet_wrap(~dose_cluster_direction, nrow = 1L) +
   theme_minimal() +
   theme(
     text = element_text(family = "Helvetica"),
@@ -274,10 +307,280 @@ time_dose_clusters_plot <- time_dose_clusters %>%
   ) +
   labs(x = "Cluster", y = "Proportion", fill = "Time")
 
+time_dose_clusters_plot <- temporal_lfc_rescaled_with_clusters %>%
+  mutate(
+    across(
+      c(mid_induction_time),
+      . %>%
+        factor(., levels = as.character(sort(unique(.))))
+    )
+  ) %>%
+  filter(ERKi == "all", directed == "absolute", log2FoldChange_range_erki > 1) %>%
+  ggplot(
+    aes(mid_induction_time, fill = dose_cluster_name)
+  ) +
+  geom_bar(
+    position = "fill"
+  ) +
+  scale_fill_brewer(palette = "Set2") +
+  theme_minimal() +
+  facet_wrap(~dose_cluster_direction) +
+  labs(x = "Induction time", y = "Proportion", fill = "Dose-response\nbehavior")
+
 cowplot::ggsave2(
-  file.path(wd, "time_dose_clusters_barplot_by_time_with_direction_only_all.pdf"),
-  time_dose_clusters_plot, width = 4, height = 3.5
+  file.path(wd, "time_dose_clusters_barplot_only_all_only_sig.pdf"),
+  time_dose_clusters_plot,
+  width = 5, height = 4
 )
+
+time_dose_clusters_plot <- temporal_lfc_rescaled_with_clusters %>%
+  mutate(
+    across(
+      c(mid_induction_time),
+      . %>%
+        factor(., levels = as.character(sort(unique(.))))
+    )
+  ) %>%
+  filter(ERKi == "all", directed == "absolute", log2FoldChange_range_erki > 1) %>%
+  ggplot(
+    aes(mid_induction_time, fill = dose_cluster_name)
+  ) +
+  geom_bar(
+    position = "fill"
+  ) +
+  scale_fill_brewer(palette = "Set2") +
+  theme_minimal() +
+  # facet_wrap(~dose_cluster_direction) +
+  labs(x = "Induction time", y = "Proportion", fill = "Cluster")
+
+time_dose_clusters_plot <- temporal_lfc_rescaled_with_clusters %>%
+  filter(ERKi == "all", directed == "absolute") %>%
+  distinct(gene_id, mid_induction_time, dose_cluster_name, dose_cluster_direction) %>%
+  mutate(
+    mid_induction_time = factor(
+      mid_induction_time,
+      levels = as.character(sort(unique(mid_induction_time)))
+    )
+  ) %>%
+  ggplot(aes(
+    x = mid_induction_time, fill = dose_cluster_name
+  )) +
+    geom_bar(aes(y = stat(prop), group = dose_cluster_name), position = "dodge") +
+    labs(x = "Induction time", y = "Proportion", fill = "Dose-response\nbehavior") +
+    scale_fill_brewer(palette = "Set2")
+    # facet_wrap(~dose_cluster_direction)
+
+cowplot::ggsave2(
+  file.path(wd, "time_dose_clusters_barplot_by_time_only_all_proportion_per_cluster.pdf"),
+  time_dose_clusters_plot,
+  width = 5, height = 3
+)
+
+time_dose_clusters_plot <- temporal_lfc_rescaled_with_clusters %>%
+  filter(ERKi == "all", directed == "absolute") %>%
+  distinct(gene_id, mid_induction_time, dose_cluster_name, dose_cluster_direction) %>%
+  mutate(
+    mid_induction_time = factor(
+      mid_induction_time,
+      levels = as.character(sort(unique(mid_induction_time)))
+    )
+  ) %>%
+  ggplot(aes(
+    x = mid_induction_time, fill = dose_cluster_name
+  )) +
+  geom_bar(aes(group = dose_cluster_name), position = "dodge") +
+  labs(x = "Induction time", y = "Count", fill = "Dose-response\nbehavior") +
+  scale_fill_brewer(palette = "Set2")
+# facet_wrap(~dose_cluster_direction)
+
+# cowplot::ggsave2(
+ggsave(
+  file.path(wd, "time_dose_clusters_barplot_by_time_only_all_absolute_counts.pdf"),
+  time_dose_clusters_plot,
+  width = 5, height = 3,
+  device = cairo_pdf
+)
+
+
+time_dose_clusters_plot <- temporal_lfc_rescaled_with_clusters %>%
+  filter(ERKi == "all", directed == "absolute") %>%
+  distinct(gene_id, mid_induction_time, dose_cluster_name, dose_cluster_direction) %>%
+  mutate(
+    mid_induction_time = factor(
+      mid_induction_time,
+      levels = as.character(sort(unique(mid_induction_time)))
+    )
+  ) %>%
+  ggplot(aes(
+    x = mid_induction_time, fill = dose_cluster_name
+  )) +
+  geom_bar(aes(y = stat(prop), group = dose_cluster_name), position = "dodge") +
+  labs(x = "Induction time", y = "Proportion", fill = "Dose-response\nbehavior") +
+  scale_fill_brewer(palette = "Set2") +
+  facet_wrap(~dose_cluster_direction, ncol = 1)
+
+cowplot::ggsave2(
+  file.path(wd, "time_dose_clusters_barplot_by_time_only_all_proportion_per_cluster_separated.pdf"),
+  time_dose_clusters_plot,
+  width = 5, height = 3
+)
+
+
+time_dose_cluster_independence_test <- temporal_lfc_rescaled_with_clusters %>%
+  mutate(
+    Time_rank = factor(Time, levels = as.character(sort(unique(Time)))) %>%
+      as.numeric()
+  ) %>%
+  group_nest(directed, ERKi) %>%
+  mutate(
+    data = map(
+      data,
+      function(df) {
+        coin::kruskal_test(
+          mid_induction_time ~ dose_cluster_name,
+          df %>%
+            distinct(gene_id, mid_induction_time, dose_cluster_name),
+          conf.int = TRUE,
+          ties.method	= "average-scores"
+        )
+      }
+    )
+  )
+
+time_dose_cluster_independence_test <- temporal_lfc_rescaled_with_clusters %>%
+  mutate(
+    Time_rank = factor(Time, levels = as.character(sort(unique(Time)))) %>%
+      as.numeric()
+  ) %>%
+  distinct(directed, ERKi, dose_cluster_name, mid_induction_time, gene_id) %>%
+  group_nest(directed, ERKi) %>%
+  mutate(
+    data = pmap(
+      .,
+      function(dose_cluster_name, data, ...) {
+        browser()
+        data %>%
+          bind_rows(
+            . %>%
+              filter
+          )
+      }
+    )
+  )
+
+library(lmPerm)
+
+time_dose_cluster_independence_test <- temporal_lfc_rescaled_with_clusters %>%
+  mutate(
+    mid_induction_time_rank = factor(mid_induction_time, levels = as.character(sort(unique(mid_induction_time)))) %>%
+      as.numeric()
+  ) %>%
+  distinct(directed, ERKi, dose_cluster_name, mid_induction_time_rank, mid_induction_time, gene_id) %>%
+  group_nest(directed, ERKi) %>%
+  filter(directed == "absolute", ERKi == "all") %>%
+  mutate(
+    data = pmap(
+      .,
+      function(dose_cluster_name, data, ...) {
+        # browser()
+        # model <- nlme::lme(
+        #   # mid_induction_time ~ dose_cluster_name,
+        #   mid_induction_time ~ 1,
+        #   random = -1 | dose_cluster_name,
+        #   data = data
+        # )
+        # PT <- rcompanion::pairwisePermutationTest(
+        #   mid_induction_time ~ dose_cluster_name,
+        #   data = data, method = "fdr"
+        # )
+        # model <- data %>%
+        #   specify(mid_induction_time ~ dose_cluster_name) %>%
+        #   hypothesise(null = "independence") %>%
+        #   generate(reps = 1000, type = "permute")
+        # browser()
+        # model <- lmPerm::aovp(mid_induction_time ~ dose_cluster_name, data = data)
+        bs <- data %>%
+          specify(mid_induction_time ~ dose_cluster_name) %>%
+          hypothesise(null = "independence") %>%
+          generate(reps = 1000, type = "bootstrap")
+        bs_stats <- bs %>%
+          group_by(dose_cluster_name, replicate) %>%
+          summarize(m = mean(mid_induction_time), .groups = "drop") %>%
+          group_by(dose_cluster_name) %>%
+          summarize(mm = mean(m), ci_low = quantile(m, 0.05), ci_high = quantile(m, 0.95), .group = "drop")
+        model <- aov(mid_induction_time_rank ~ dose_cluster_name, data = data)
+        TukeyHSD(model)
+        list(
+          bs = bs,
+          bs_stats = bs_stats,
+          model = model
+        )
+      }
+    )
+  )
+
+time_dose_cluster_mean_induction_plot <- ggplot(
+  time_dose_cluster_independence_test$data[[1]]$bs %>%
+    group_by(dose_cluster_name, replicate) %>%
+    summarize(m = mean(mid_induction_time), .groups = "drop"),
+  aes(dose_cluster_name, m, fill = dose_cluster_name)
+) +
+  geom_violin(
+    color = "black",
+    draw_quantiles = c(0.05, 0.5, 0.95),
+    show.legend = FALSE
+  ) +
+  scale_fill_brewer(palette = "Set2") +
+  # geom_boxplot() +
+  lims(y = c(0, NA)) +
+  labs(x = "Dose-response behavior", y = "Bootstrapped mean induction time")
+
+cowplot::ggsave2(
+  file.path(wd, "time_dose_clusters_bootstrapped_mean_violin.pdf"),
+  time_dose_cluster_mean_induction_plot,
+  width = 3, height = 3.5
+)
+
+  mutate(
+    data = map(
+      data,
+      function(df) {
+        coin::kruskal_test(
+          mid_induction_time ~ dose_cluster_name,
+          df %>%
+            distinct(gene_id, mid_induction_time, dose_cluster_name),
+          conf.int = TRUE,
+          ties.method	= "average-scores"
+        )
+      }
+    )
+  )
+
+# Count number of genes flippng signs ------------------------------------------
+###############################################################################T
+
+
+n_genes <- temporal_lfc_rescaled_with_clusters %>%
+  # filter(ERKi == "0", directed == "directed", log2FoldChange_range_erki > 1) %>%
+  mutate(
+    pos_neg = sign(log2FoldChange)
+  ) %>%
+  group_by(gene_id, gene_name) %>%
+  summarize(
+    pos_neg_sum = sum(pos_neg),
+    .groups = "drop"
+  )
+
+n_genes_plot <- n_genes %>%
+  mutate(
+    pos_neg_sum = factor(
+      pos_neg_sum,
+      levels = as.character(sort(unique(pos_neg_sum)))
+    )
+  ) %>%
+  ggplot(aes(pos_neg_sum)) +
+  geom_bar()
+
 
 
 # Visualize induction clusters -------------------------------------------------
@@ -308,7 +611,7 @@ plot_cluster_trajectories <- function(
   p <- p +
     geom_path() +
     geom_point() +
-    theme_minimal() +
+    # theme_minimal() +
     scale_color_viridis_c() +
     theme(legend.position = "bottom")
   if (!missing(facet_x) && !missing(facet_y)) {
@@ -321,35 +624,14 @@ plot_cluster_trajectories <- function(
   p
 }
 
-temporal_lfc_rescaled_with_clusters <- temporal_lfc_rescaled %>%
-  inner_join(
-    temporal_lfc %>%
-      select(gene_id, gene_name, ERKi, Time, log2FoldChange_var_erki, log2FoldChange_range_erki),
-    by = c("gene_id", "gene_name", "ERKi", "Time")
-  ) %>%
-  inner_join(
-    temporal_ordering %>%
-      select(gene_id, gene_name, ERKi, directed, max_induction_time, max_induction,
-             mid_induction_time, mean_induction),
-    by = c("gene_id", "gene_name", "ERKi", "directed")
-  ) %>%
-  inner_join(
-    dose_clusters %>%
-      select(
-        gene_id, gene_name, dose_cluster = k_medoids
-      ),
-    by = c("gene_id", "gene_name")
-  ) %>%
-  inner_join(
-    cluster_names %>%
-      select(dose_cluster = class_combined, dose_cluster_name_combined = combined,
-             dose_cluster_direction = direction, dose_cluster_name = class_name),
-    by = c("dose_cluster")
-  )
-
 temporal_ordering_traces <-  plot_cluster_trajectories(
   temporal_lfc_rescaled_with_clusters %>%
     filter(ERKi == "all", directed == "directed", log2FoldChange_range_erki > 1) %>%
+    mutate(
+      log2FoldChange_rescaled = log2FoldChange_rescaled * if_else(
+        max_induction < 0, -1, 1
+      )
+    ) %>%
     # select(gene_id, Time, dose_cluster_name_combined, dose_cluster_direction,
     #        dose_cluster_name, mid_induction_time, log2FoldChange_rescaled) %>%
     mutate_at(vars(mid_induction_time), . %>% as.character %>% fct_reorder(as.numeric(.))),
@@ -363,6 +645,194 @@ temporal_ordering_traces <-  plot_cluster_trajectories(
 
 cowplot::ggsave2(
   file.path(wd, "temporal_ordering_traces_by_dose_cluster_directed.pdf"),
+  temporal_ordering_traces, width = 10, height = 6
+)
+
+
+
+temporal_lfc_rescaled_with_clusters %>%
+  mutate(across(log2FoldChange, round, digits = 2)) %>%
+  filter(directed == "directed", ERKi == "all", mid_induction_time == 24, dose_cluster_name == "full ERK") %>%
+  View()
+
+
+
+temporal_ordering_traces <-  plot_cluster_trajectories(
+  temporal_lfc_rescaled_with_clusters %>%
+    filter(ERKi == "all", directed == "absolute") %>%
+    mutate(
+      log2FoldChange_rescaled = log2FoldChange_rescaled * if_else(
+        max_induction < 0, -1, 1
+      )
+    ) %>%
+    # select(gene_id, Time, dose_cluster_name_combined, dose_cluster_direction,
+    #        dose_cluster_name, mid_induction_time, log2FoldChange_rescaled) %>%
+    mutate_at(vars(mid_induction_time), . %>% as.character %>% fct_reorder(as.numeric(.))),
+  x = Time, y = log2FoldChange_rescaled,
+  order_id = Time, trajectory_id = gene_id,
+  facet_x = mid_induction_time, facet_y = dose_cluster_name, all_traces = TRUE,
+  all_trace_alpha = 0.4
+) +
+  labs(y = "Expression induction") +
+  facet_grid(vars(dose_cluster_name), vars(mid_induction_time))
+
+cowplot::ggsave2(
+  file.path(wd, "temporal_ordering_traces_by_dose_cluster_absolute.pdf"),
+  temporal_ordering_traces, width = 10, height = 6
+)
+
+
+temporal_ordering_traces <-  plot_cluster_trajectories(
+  temporal_lfc_rescaled_with_clusters %>%
+    filter(ERKi == "all", directed == "absolute") %>%
+    mutate(
+      log2FoldChange_rescaled = log2FoldChange_rescaled * if_else(
+        max_induction < 0, -1, 1
+      )
+    ) %>%
+    # select(gene_id, Time, dose_cluster_name_combined, dose_cluster_direction,
+    #        dose_cluster_name, mid_induction_time, log2FoldChange_rescaled) %>%
+    mutate_at(vars(mid_induction_time), . %>% as.character %>% fct_reorder(as.numeric(.))),
+  x = Time, y = log2FoldChange_rescaled,
+  order_id = Time, trajectory_id = gene_id,
+  facet_x = mid_induction_time, facet_y = dose_cluster_direction, all_traces = TRUE,
+  all_trace_alpha = 0.4
+) +
+  labs(y = "Expression induction") +
+  facet_grid(vars(dose_cluster_direction), vars(mid_induction_time))
+
+
+temporal_ordering_traces <-  plot_cluster_trajectories(
+  temporal_lfc_rescaled_with_clusters %>%
+    filter(ERKi == "all", directed == "absolute") %>%
+    mutate(
+      log2FoldChange_rescaled = log2FoldChange_rescaled * if_else(
+        max_induction < 0, -1, 1
+      )
+    ) %>%
+    # select(gene_id, Time, dose_cluster_name_combined, dose_cluster_direction,
+    #        dose_cluster_name, mid_induction_time, log2FoldChange_rescaled) %>%
+    mutate_at(vars(mid_induction_time), . %>% as.character %>% fct_reorder(as.numeric(.))),
+  x = Time, y = log2FoldChange_rescaled,
+  order_id = Time, trajectory_id = gene_id,
+  facet_x = mid_induction_time, facet_y = dose_cluster_name_combined, all_traces = TRUE,
+  all_trace_alpha = 0.4
+) +
+  labs(y = "Expression induction") +
+  facet_grid(vars(dose_cluster_name_combined), vars(mid_induction_time))
+
+
+
+temporal_ordering_traces <-  plot_cluster_trajectories(
+  temporal_lfc_rescaled_with_clusters %>%
+    filter(ERKi %in% c("0", "1000"), directed == "absolute") %>%
+    mutate(
+      log2FoldChange_rescaled = log2FoldChange_rescaled * if_else(
+        max_induction < 0, -1, 1
+      )
+    ) %>%
+    # select(gene_id, Time, dose_cluster_name_combined, dose_cluster_direction,
+    #        dose_cluster_name, mid_induction_time, log2FoldChange_rescaled) %>%
+    mutate_at(vars(mid_induction_time), . %>% as.character %>% fct_reorder(as.numeric(.))),
+  x = Time, y = log2FoldChange_rescaled,
+  order_id = Time, trajectory_id = gene_id,
+  facet_x = mid_induction_time, facet_y = dose_cluster_name_combined, all_traces = TRUE,
+  all_trace_alpha = 0.4
+) +
+  labs(y = "Expression induction") +
+  facet_grid(vars(dose_cluster_name_combined), vars(mid_induction_time))
+
+
+
+temporal_ordering_traces <-  plot_cluster_trajectories(
+  temporal_lfc_rescaled_with_clusters %>%
+    filter(ERKi %in% c("1000"), directed == "directed", log2FoldChange_range_erki > 1) %>%
+    mutate(
+      log2FoldChange_rescaled = log2FoldChange_rescaled * if_else(
+        max_induction < 0, -1, 1
+      )
+    ) %>%
+    # select(gene_id, Time, dose_cluster_name_combined, dose_cluster_direction,
+    #        dose_cluster_name, mid_induction_time, log2FoldChange_rescaled) %>%
+    mutate_at(vars(mid_induction_time), . %>% as.character %>% fct_reorder(as.numeric(.))),
+  x = Time, y = log2FoldChange_rescaled,
+  order_id = Time, trajectory_id = gene_id,
+  facet_x = mid_induction_time, facet_y = dose_cluster_name, all_traces = TRUE,
+  all_trace_alpha = 0.4
+) +
+  labs(y = "Expression induction") +
+  facet_grid(vars(dose_cluster_name), vars(mid_induction_time))
+
+cowplot::ggsave2(
+  file.path(wd, "temporal_ordering_traces_directed_ERKi_1000.pdf"),
+  temporal_ordering_traces, width = 10, height = 6
+)
+
+temporal_ordering_traces <-  plot_cluster_trajectories(
+  temporal_lfc_rescaled_with_clusters %>%
+    filter(ERKi %in% c("0"), directed == "directed", log2FoldChange_range_erki > 1) %>%
+    mutate(
+      log2FoldChange_rescaled = log2FoldChange_rescaled * if_else(
+        max_induction < 0, -1, 1
+      )
+    ) %>%
+    # select(gene_id, Time, dose_cluster_name_combined, dose_cluster_direction,
+    #        dose_cluster_name, mid_induction_time, log2FoldChange_rescaled) %>%
+    mutate_at(vars(mid_induction_time), . %>% as.character %>% fct_reorder(as.numeric(.))),
+  x = Time, y = log2FoldChange_rescaled,
+  order_id = Time, trajectory_id = gene_id,
+  facet_x = mid_induction_time, facet_y = dose_cluster_name, all_traces = TRUE,
+  all_trace_alpha = 0.4
+) +
+  labs(y = "Expression induction") +
+  facet_grid(vars(dose_cluster_name), vars(mid_induction_time))
+
+cowplot::ggsave2(
+  file.path(wd, "temporal_ordering_traces_directed_ERKi_0.pdf"),
+  temporal_ordering_traces, width = 10, height = 6
+)
+
+
+temporal_ordering_traces <-  plot_cluster_trajectories(
+  temporal_lfc_rescaled_with_clusters %>%
+    filter(ERKi %in% c("all"), directed == "absolute", log2FoldChange_range_erki > 1) %>%
+    mutate(
+      log2FoldChange_rescaled = log2FoldChange_rescaled * if_else(
+        max_induction < 0, -1, 1
+      )
+    ) %>%
+    # select(gene_id, Time, dose_cluster_name_combined, dose_cluster_direction,
+    #        dose_cluster_name, mid_induction_time, log2FoldChange_rescaled) %>%
+    mutate_at(vars(mid_induction_time), . %>% as.character %>% fct_reorder(as.numeric(.))),
+  x = Time, y = log2FoldChange_rescaled,
+  order_id = Time, trajectory_id = gene_id,
+  facet_x = mid_induction_time, facet_y = dose_cluster_name, all_traces = TRUE,
+  all_trace_alpha = 0.4
+) +
+  labs(y = "Expression induction") +
+  facet_grid(vars(dose_cluster_name), vars(mid_induction_time))
+
+cowplot::ggsave2(
+  file.path(wd, "temporal_ordering_traces_absolute_ERKi_all.pdf"),
+  temporal_ordering_traces, width = 10, height = 6
+)
+
+temporal_ordering_traces <-  plot_cluster_trajectories(
+  temporal_lfc_rescaled_with_clusters %>%
+    filter(ERKi %in% c("all"), directed == "absolute", log2FoldChange_range_erki > 1) %>%
+    # select(gene_id, Time, dose_cluster_name_combined, dose_cluster_direction,
+    #        dose_cluster_name, mid_induction_time, log2FoldChange_rescaled) %>%
+    mutate_at(vars(mid_induction_time), . %>% as.character %>% fct_reorder(as.numeric(.))),
+  x = Time, y = log2FoldChange_rescaled,
+  order_id = Time, trajectory_id = gene_id,
+  facet_x = mid_induction_time, facet_y = dose_cluster_name, all_traces = TRUE,
+  all_trace_alpha = 0.4
+) +
+  labs(y = "Expression induction") +
+  facet_grid(vars(dose_cluster_name), vars(mid_induction_time))
+
+cowplot::ggsave2(
+  file.path(wd, "temporal_ordering_traces_absolute_ERKi_all_no_flipping.pdf"),
   temporal_ordering_traces, width = 10, height = 6
 )
 
