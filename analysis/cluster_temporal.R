@@ -250,7 +250,6 @@ temporal_lfc_ERKi_sum <- temporal_lfc %>%
   summarize(
     # Weigh ERK concentrations by the gene's variance across time
     log2FoldChange_sum_mean = weighted.mean(log2FoldChange, log2FoldChange_range_erki),
-    log2FoldChange_sum_var_erki = Hmisc::wtd.var(log2FoldChange, log2FoldChange_range_erki, method = "ML"),
     # Use either 33rd or 66th percentile, whichever absolute value is larger
     # CMap method for aggregating cell lines
     log2FoldChange_sum_cmap = Hmisc::wtd.quantile(
@@ -263,7 +262,8 @@ temporal_lfc_ERKi_sum <- temporal_lfc %>%
   ) %>%
   group_by(gene_id, gene_name) %>%
   mutate(
-    log2FoldChange_sum_range_erki = max(log2FoldChange_sum_cmap) - min(log2FoldChange_sum_cmap)
+    log2FoldChange_sum_range_erki = max(log2FoldChange_sum_cmap) - min(log2FoldChange_sum_cmap),
+    log2FoldChange_sum_var_erki = var(log2FoldChange_sum_cmap),
   ) %>%
   ungroup() %>%
   select(
@@ -301,8 +301,8 @@ temporal_lfc_rescaled <- temporal_lfc_combined %>%
     Time,
     log2FoldChange,
     directed = log2FoldChange %>%
-      # magrittr::divide_by(log2FoldChange[order(abs(log2FoldChange), decreasing = TRUE)[1]]),
-      magrittr::divide_by(max(abs(.))),
+      magrittr::divide_by(log2FoldChange[order(abs(log2FoldChange), decreasing = TRUE)[1]]),
+      # magrittr::divide_by(max(abs(.))),
     absolute = log2FoldChange %>%
       abs() %>%
       magrittr::divide_by(max(.))
@@ -340,15 +340,24 @@ temporal_ordering <- temporal_lfc_rescaled %>%
     max_induction_time = Time[max_induction_idx],
     max_induction_rescaled = log2FoldChange_rescaled[max_induction_idx],
     max_induction = log2FoldChange[max_induction_idx],
-    mid_induction_time = {
-      if (directed == "absolute" || max_induction > 0)
-        Time[min(which(log2FoldChange_rescaled > 0.5))]
-      else
-        Time[min(which(log2FoldChange_rescaled < -0.5))]
-    },
+    mid_induction_time = Time[min(which(log2FoldChange_rescaled > 0.5))],
     mean_induction_rescaled = mean(log2FoldChange_rescaled),
     mean_induction = mean(log2FoldChange),
     .groups = "drop"
+  )
+
+
+temporal_ordering_all_stats <- temporal_lfc_rescaled %>%
+  inner_join(
+    temporal_lfc_combined %>%
+      select(gene_id, gene_name, ERKi, Time, log2FoldChange_var_erki, log2FoldChange_range_erki),
+    by = c("gene_id", "gene_name", "ERKi", "Time")
+  ) %>%
+  inner_join(
+    temporal_ordering %>%
+      select(gene_id, gene_name, ERKi, directed, max_induction_time, max_induction,
+             mid_induction_time, mean_induction),
+    by = c("gene_id", "gene_name", "ERKi", "directed")
   )
 
 # plot_single_surface(
@@ -402,6 +411,13 @@ write_csv(
   file.path(wd, "temporal_ordering.csv")
 )
 
+write_csv(
+  temporal_ordering_all_stats,
+  file.path(wd, "temporal_ordering_all_stats.csv")
+)
+
+
+
 # Write special JY combined table with log2FoldChange --------------------------
 ###############################################################################T
 
@@ -454,8 +470,9 @@ temporal_ordering_syn <- Folder("temporal_ordering", "syn21432134") %>%
 c(
   file.path(wd, "temporal_lfc.csv"),
   file.path(wd, "temporal_ordering.csv"),
-  file.path(wd, "temporal_lfc_rescaled.csv")
+  file.path(wd, "temporal_lfc_rescaled.csv"),
+  file.path(wd, "temporal_ordering_all_stats.csv")
   # file.path(wd_clustering, "temporal_euclidian_hclust.rds"),
   # file.path(wd_clustering, "temporal_kmedoids.rds")
 ) %>%
-  synStoreMany(temporal_ordering_syn, activity = activity)
+  synStoreMany(temporal_ordering_syn, activity = activity, forceVersion = FALSE)
