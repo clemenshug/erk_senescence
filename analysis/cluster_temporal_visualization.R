@@ -17,16 +17,16 @@ dir.create(wd, showWarnings = FALSE)
 surface_fit <- syn("syn21444486") %>%
   read_csv()
 
-temporal_ordering <- syn("syn21536903") %>%
+temporal_ordering <- syn("syn25471789") %>%
   read_csv()
 
-temporal_lfc <- syn("syn25278592") %>%
+temporal_lfc <- syn("syn25471787") %>%
   read_csv(col_types = list(ERKi = col_character()))
 
-temporal_lfc_rescaled <- syn("syn25278596") %>%
+temporal_lfc_rescaled <- syn("syn25471791") %>%
   read_csv()
 
-temporal_lfc_all_stats <- syn("syn25278963") %>%
+temporal_lfc_all_stats <- syn("syn25471794") %>%
   read_csv(
     col_types = list(ERKi = col_character())
   )
@@ -508,12 +508,19 @@ time_dose_cluster_independence_test <- temporal_lfc_rescaled_with_clusters %>%
           summarize(m = mean(mid_induction_time), .groups = "drop") %>%
           group_by(dose_cluster_name) %>%
           summarize(mm = mean(m), ci_low = quantile(m, 0.05), ci_high = quantile(m, 0.95), .group = "drop")
-        model <- aov(mid_induction_time_rank ~ dose_cluster_name, data = data)
-        TukeyHSD(model)
+        dunn <- dunn.test::dunn.test(
+          x = data$mid_induction_time,
+          g = data$dose_cluster_name,
+          method = "bh"
+        )
+        model <- aov(mid_induction_time ~ dose_cluster_name, data = data)
+        tukey = TukeyHSD(model)
         list(
           bs = bs,
           bs_stats = bs_stats,
-          model = model
+          model = model,
+          dunn = dunn,
+          tukey = tukey
         )
       }
     )
@@ -556,7 +563,67 @@ cowplot::ggsave2(
     )
   )
 
-# Count number of genes flippng signs ------------------------------------------
+# Time trace of example gene all concentrations --------------------------------
+###############################################################################T
+
+gene_temporal_lfc <- temporal_lfc_all_stats %>%
+    filter(gene_name == "CDKN1B", directed == "absolute") %>% {
+      bind_rows(
+        filter(., ERKi == "all") %>%
+          select(Time, starts_with("log2FoldChange_q")) %>%
+          pivot_longer(-Time, names_to = "series", values_to = "log2FoldChange") %>%
+          mutate(
+            series = if_else(str_detect(series, fixed("q33")), "33rd quantile", "67th quantile")
+          ),
+        filter(., ERKi != "all") %>%
+          select(Time, series = ERKi, log2FoldChange)
+      )
+    } %>%
+    mutate(
+      quantile = str_detect(series, fixed("quantile"))
+    )
+
+gene_temporal_lfc_plot <- gene_temporal_lfc %>%
+  mutate(
+    series = factor(
+      series, levels = c(unique(meta$ERKi), "33rd quantile", "67th quantile")
+    )
+  ) %>%
+  ggplot(aes(Time, log2FoldChange, color = series)) +
+  geom_line(aes(size = quantile, linetype = quantile)) +
+  scale_color_manual(
+    values = c(
+      set_names(viridisLite::viridis(6), c("0", "3.9", "15.6", "62.5", "250", "1000")),
+      "33rd quantile" = "blue", "67th quantile" = "red"
+    )
+  ) +
+  scale_size_manual(
+    values = c(`TRUE` = 2, `FALSE` = 1)
+  ) +
+  scale_linetype_manual(
+    values = c(`TRUE` = "dashed", `FALSE` = "solid")
+  ) +
+  guides(size = FALSE, linetype = FALSE) +
+  labs(color = "ERKi dose", title = "CDKN1B")
+
+ggsave(
+  file.path(wd, "time_series_explanation_CDKN1B.pdf"),
+  gene_temporal_lfc_plot,
+  width = 5, height = 3
+)
+
+x <- temporal_lfc_all_stats %>%
+  filter(gene_name == "CDKN2B", directed == "absolute", ERKi != "all", Time == 24)
+
+y <- wtd.quantile(
+  x$log2FoldChange, weights = x$log2FoldChange_range_erki, probs = c(0.33, 0.67)
+)
+
+y <- Hmisc::wtd.quantile(
+  x$log2FoldChange, weights = x$log2FoldChange_range_erki, probs = c(0.33, 0.67)
+)
+
+# Count number of genes flipping signs ------------------------------------------
 ###############################################################################T
 
 
