@@ -78,7 +78,8 @@ pca_plot <- function (data, meta, aes = ggplot2::aes(PC1, PC2), extra_layers = N
     rows = NULL,
     theme = gridExtra::ttheme_default(base_size = 6)
   )
-  patchwork::wrap_plots(p_plot, var_table, heights = c(5, 1), ncol = 1)
+  p_plot
+  # patchwork::wrap_plots(p_plot, var_table, heights = c(5, 1), ncol = 1)
 }
 
 ## Save all combinations of PC1-PC5
@@ -90,14 +91,16 @@ pca_plot_pc_param <- function(matrix, x, y, col_annotation, facet = NULL) {
     aes(!!ensym(x), !!ensym(y), fill = as.factor(ERKi), size = as.factor(Time), color = as.character(DOX)),
     center = FALSE, scale = FALSE,
     extra_layers = list(
-      geom_point(shape = 21, stroke = 2),
+      geom_point(shape = 21, stroke = 1.5),
       scale_color_manual(values = c("0" = "#000000", "1" = "#00000000")),
       scale_fill_viridis_d(),
       guides(fill = guide_legend(override.aes = list(color = "#00000000"))),
       # scale_size_manual(values = c("0" = 1, "1" = 2, "2" = 3, "4" = 4, "8" = 5, "16" = 6, "24" = 7)),
       # if (!is.null(facet)) facet_wrap(vars(!!sym(facet))) else NULL,
       facet_grid(rows = vars(Time), cols = vars(ERKi)),
-      ggrepel::geom_text_repel(aes(label = replicate), size = 4, color = "black", max.overlaps = Inf)
+      ggrepel::geom_text_repel(aes(label = replicate), size = 4, color = "black", max.overlaps = Inf),
+      theme_minimal(),
+      theme(panel.grid.minor = element_blank())
       # geom_text(aes(label = Repeat), color = "black")
     )
   )
@@ -109,33 +112,65 @@ x <- pca_plot_pc_param(
   meta %>%
     mutate(condition = Sample_ID, across(replicate, as.character)),
   facet = "Time"
+) +
+  labs(fill = "ERKi\nconcentration", size = "Time", color = "DOX")
+
+cowplot::ggsave2(
+  file.path(wd, "pca_all_replicates_minimal.pdf"),
+  x, width = 12, height = 10
 )
 
-pca_plots <- combn(paste0("PC", 1:6), 2) %>%
-  t() %>%
-  `colnames<-`(c("x", "y")) %>%
-  as_tibble() %>%
-  crossing(
-    tibble(facet = list(NULL, "Time", "ERKi"))
-  ) %>%
-  mutate(
-    plot = pmap(
-      .,
-      pca_plot_pc_param,
-      col_annotation = col_annotation
-    )
-  )
+# pca_plots <- combn(paste0("PC", 1:6), 2) %>%
+#   t() %>%
+#   `colnames<-`(c("x", "y")) %>%
+#   as_tibble() %>%
+#   crossing(
+#     tibble(facet = list(NULL, "Time", "ERKi"))
+#   ) %>%
+#   mutate(
+#     plot = pmap(
+#       .,
+#       pca_plot_pc_param,
+#       col_annotation = col_annotation
+#     )
+#   )
 
 # Cross-correlation -----------------------------------------------------------
 ###############################################################################T
 
+coeff_variance <- deseq_pairwise %>%
+  counts(normalized = TRUE) %>%
+  apply(MARGIN = 1, function(x) sd(x) / mean(x))
+
+most_changing_genes <- DESeq(deseq_pairwise, test = "LRT", reduced = ~Repeat)
+
+most_changing_genes_res <- most_changing_genes %>%
+  results(tidy = TRUE) %>%
+  as_tibble() %>%
+  arrange(padj)
+
 correlations <- deseq_pairwise %>%
   counts(normalized = TRUE) %>%
+  {
+    .[
+      most_changing_genes_res %>%
+        arrange(padj) %>%
+        head(n = 1000) %>%
+        pull(row),
+    ]
+  } %>%
+  # scale() %>%
   cor() %>%
   as.table() %>%
   as.data.frame() %>%
   as_tibble() %>%
   magrittr::set_colnames(c("Sample_1", "Sample_2", "correlation"))
+# correlations <- counts_vst %>%
+#   cor() %>%
+#   as.table() %>%
+#   as.data.frame() %>%
+#   as_tibble() %>%
+#   magrittr::set_colnames(c("Sample_1", "Sample_2", "correlation"))
 
 openxlsx::write.xlsx(
   correlations,
@@ -176,7 +211,7 @@ correlation_heatmap <- correlation_heatmap_data %>%
     aes(sample_name_1, sample_name_2, fill = correlation)
   ) +
   geom_tile() +
-  scale_fill_viridis_c(direction = -1, limits = c(0.90, 1), oob = scales::squish) +
+  scale_fill_viridis_c(direction = 1, limits = c(0.9, 1), oob = scales::squish) +
   # scale_fill_distiller(palette = "RdBu", direction = -1, limits = c(0.90, 1), oob = scales::squish) +
   geom_rect(
     aes(
@@ -199,10 +234,11 @@ correlation_heatmap <- correlation_heatmap_data %>%
     axis.text.x = element_text(angle = 45, hjust = 1)
   )
 
-ggsave("correlation_heatmap.pdf", correlation_heatmap, width = 15, height = 12)
+ggsave(file.path(wd, "correlation_heatmap_most_changing_genes.pdf"), correlation_heatmap, width = 15, height = 12)
 
 
 # Heatmap with ComplexHeatmap so we can show time and ERKi concentration
+library(ComplexHeatmap)
 
 meta_correlation <- meta %>%
   arrange(
@@ -245,6 +281,7 @@ annotation_row <- HeatmapAnnotation(
   df = meta_correlation %>%
     select(ERKi, Time) %>%
     mutate(across(.fns = ~fct_inorder(as.character(.x)))) %>%
+    arrange(desc(row_number())) %>%
     as.data.frame(),
   a = anno_empty(border = FALSE, width = unit(5, "points")),
   col = list(
@@ -285,18 +322,19 @@ correlation_heatmap_data <- correlations %>%
 complex_correlation_heatmap <- correlation_heatmap_data %>%
   mutate(correlation = pmax(correlation, 0.90)) %>%
   pivot_wider(id_cols = c("Sample_1"), names_from = "Sample_2", values_from = "correlation") %>%
+  arrange(desc(row_number())) %>%
   column_to_rownames("Sample_1") %>%
   as.matrix() %>%
   magrittr::set_colnames(NULL) %>%
   magrittr::set_rownames(NULL) %>%
   Heatmap(
-    col = viridis::viridis(100, direction = -1),
+    col = viridis::viridis(100, direction = 1),
     cluster_rows = FALSE,
     cluster_columns = FALSE,
     row_split = meta_correlation[["condition"]],
     column_split = meta_correlation[["condition"]],
-    row_gap = unit(2, "points"),
-    column_gap = unit(2, "points"),
+    row_gap = unit(0, "points"),
+    column_gap = unit(0, "points"),
     # border = TRUE,
     show_row_names = FALSE,
     show_column_names = FALSE,
@@ -308,7 +346,7 @@ complex_correlation_heatmap <- correlation_heatmap_data %>%
   )
 
 withr::with_pdf(
-  file.path(wd, "correlation_heatmap_annotation_with_gap.pdf"),
+  file.path(wd, "correlation_heatmap_annotation_with_gap_most_changing_genes.pdf"),
   draw(complex_correlation_heatmap),
   width = 15, height = 12
 )
@@ -318,13 +356,13 @@ withr::with_pdf(
 ###############################################################################T
 
 
-correlations <- deseq_pairwise %>%
-  counts(normalized = TRUE) %>%
-  cor() %>%
-  as.table() %>%
-  as.data.frame() %>%
-  as_tibble() %>%
-  magrittr::set_colnames(c("Sample_1", "Sample_2", "correlation"))
+# correlations <- deseq_pairwise %>%
+#   counts(normalized = TRUE) %>%
+#   cor() %>%
+#   as.table() %>%
+#   as.data.frame() %>%
+#   as_tibble() %>%
+#   magrittr::set_colnames(c("Sample_1", "Sample_2", "correlation"))
 
 meta_correlation <- meta %>%
   group_by(condition, Repeat) %>%
@@ -362,7 +400,6 @@ meta_correlation <- meta %>%
   }
 
 
-
 correlation_heatmap_data <- correlations %>%
   inner_join(
     meta_correlation,
@@ -374,9 +411,137 @@ correlation_heatmap <- correlation_heatmap_data %>%
     aes(sample_name_Repeat_1, sample_name_Repeat_2, fill = correlation)
   ) +
   geom_tile() +
-  scale_fill_viridis_c(direction = -1, limits = c(0.90, 1), oob = scales::squish) +
+  scale_fill_viridis_c(direction = 1, limits = c(0.90, 1), oob = scales::squish) +
   theme(
     axis.text.x = element_text(angle = 45, hjust = 1)
   )
 
-ggsave("correlation_heatmap_pairwise.pdf", correlation_heatmap, width = 12, height = 10)
+ggsave(file.path(wd, "correlation_heatmap_pairwise.pdf"), correlation_heatmap, width = 12, height = 10)
+
+
+# Heatmap with ComplexHeatmap so we can show time and ERKi concentration
+library(ComplexHeatmap)
+
+meta_correlation <- meta %>%
+  arrange(
+    ERKi, Time, DOX, Repeat, replicate
+  ) %>%
+  mutate(
+    sample_name = paste0(condition, "_", replicate) %>%
+      fct_inorder(),
+    across(c(Sample_ID, condition), fct_inorder)
+  ) %>%
+  group_by(condition, Repeat) %>%
+  slice_head(n = 1) %>%
+  ungroup()
+
+
+
+meta_correlation <- meta %>%
+  group_by(condition, Repeat) %>%
+  slice_head(n = 1) %>%
+  ungroup() %>%
+  arrange(
+    ERKi, Time, desc(DOX), Repeat, replicate
+  )
+
+annotation_col <- HeatmapAnnotation(
+  df = meta_correlation %>%
+    filter(Repeat == 1) %>%
+    select(ERKi, Time, DOX) %>%
+    mutate(across(.fns = ~fct_inorder(as.character(.x)))) %>%
+    as.data.frame(),
+  a = anno_empty(border = FALSE, height = unit(5, "points")),
+  col = list(
+    ERKi = unique(meta_correlation[["ERKi"]]) %>% {
+      set_names(
+        viridisLite::viridis(n = length(.), direction = -1),
+        .
+      )
+    },
+    Time = unique(meta_correlation[["Time"]]) %>% {
+      set_names(
+        viridisLite::magma(n = length(.), direction = -1),
+        .
+      )
+    },
+    DOX = c("1" = "black", "0" = "white")
+  )
+)
+
+annotation_row <- HeatmapAnnotation(
+  df = meta_correlation %>%
+    filter(Repeat == 2) %>%
+    select(ERKi, Time, DOX) %>%
+    mutate(across(.fns = ~fct_inorder(as.character(.x)))) %>%
+    arrange(desc(row_number())) %>%
+    as.data.frame(),
+  a = anno_empty(border = FALSE, width = unit(5, "points")),
+  col = list(
+    ERKi = unique(meta_correlation[["ERKi"]]) %>% {
+      set_names(
+        viridisLite::viridis(n = length(.), direction = -1),
+        .
+      )
+    },
+    Time = unique(meta_correlation[["Time"]]) %>% {
+      set_names(
+        viridisLite::magma(n = length(.), direction = -1),
+        .
+      )
+    },
+    DOX = c("1" = "black", "0" = "white")
+  ),
+  which = "row",
+  show_legend = FALSE
+)
+
+
+
+correlation_heatmap_data <- crossing(
+  meta_correlation %>%
+    filter(Repeat == 1) %>%
+    select(Sample_1 = Sample_ID),
+  meta_correlation %>%
+    filter(Repeat == 2) %>%
+    select(Sample_2 = Sample_ID),
+) %>%
+  arrange(
+    match(Sample_1, meta_correlation$Sample_ID),
+    match(Sample_2, meta_correlation$Sample_ID)
+  ) %>%
+  inner_join(
+    correlations
+  )
+
+complex_correlation_heatmap <- correlation_heatmap_data %>%
+  mutate(correlation = pmax(correlation, 0.90)) %>%
+  pivot_wider(names_from = Sample_1, values_from = correlation) %>%
+  arrange(desc(row_number())) %>%
+  column_to_rownames("Sample_2") %>%
+  as.matrix() %>%
+  # magrittr::set_colnames(NULL) %>%
+  # magrittr::set_rownames(NULL) %>%
+  Heatmap(
+    col = viridis::viridis(100, direction = 1),
+    cluster_rows = FALSE,
+    cluster_columns = FALSE,
+    # row_split = filter(meta_correlation, Repeat == 1)[["condition"]],
+    # column_split = filter(meta_correlation, Repeat == 2)[["condition"]],
+    row_gap = unit(0, "points"),
+    column_gap = unit(0, "points"),
+    # border = TRUE,
+    show_row_names = FALSE,
+    show_column_names = FALSE,
+    top_annotation = annotation_col,
+    left_annotation = annotation_row,
+    row_title = NULL,
+    column_title = NULL,
+    heatmap_legend_param = list(title = "Correlation")
+  )
+
+withr::with_pdf(
+  file.path(wd, "correlation_heatmap_pairwise_annotation_most_changing_genes.pdf"),
+  draw(complex_correlation_heatmap),
+  width = 15, height = 12
+)
