@@ -1,11 +1,9 @@
 library(tidyverse)
 library(here)
-library(synapser)
-library(synExtra)
 library(DESeq2)
 
-synLogin()
-syn <- synDownloader(here("tempdl"), followLink = TRUE)
+synapser::synLogin()
+syn <- synExtra::synDownloader(here("tempdl"), followLink = TRUE)
 
 wd <- here("replicate_analysis")
 dir.create(wd, recursive = TRUE, showWarnings = FALSE)
@@ -342,7 +340,11 @@ complex_correlation_heatmap <- correlation_heatmap_data %>%
     left_annotation = annotation_row,
     row_title = NULL,
     column_title = NULL,
-    heatmap_legend_param = list(title = "Correlation")
+    heatmap_legend_param = list(title = "Correlation"),
+    cell_fun = function(j, i, x, y, width, height, fill) {
+      if (i == j)
+        grid.rect(gp = gpar(fill = "transparent", lwd = 2, color = "white"))
+    }
   )
 
 withr::with_pdf(
@@ -537,7 +539,11 @@ complex_correlation_heatmap <- correlation_heatmap_data %>%
     left_annotation = annotation_row,
     row_title = NULL,
     column_title = NULL,
-    heatmap_legend_param = list(title = "Correlation")
+    heatmap_legend_param = list(title = "Correlation"),
+    cell_fun = function(j, i, x, y, width, height, fill) {
+      if (44 - i == j)
+        grid.rect(x, y, width, height, gp = gpar(fill = "transparent", lwd = 2, col = "white"))
+    }
   )
 
 withr::with_pdf(
