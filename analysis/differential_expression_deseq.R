@@ -5,10 +5,11 @@ library(furrr)
 library(rtracklayer)
 
 synapser::synLogin()
-syn <- synExtra::synDownloader(here("tempdl"), followLink = TRUE)
+syn <- synExtra::synDownloader("~/data", .cache = TRUE)
 
 
-meta <- read_excel("DeepSeqMetatable_9_13_19.xlsx") %>%
+meta <- syn("syn21411559") %>%
+  read_excel() %>%
   mutate(
     condition = paste0("time",Time,"dox",DOX) %>%
       as.factor() %>%
@@ -27,7 +28,8 @@ gene_map <- syn("syn21411554") %>%
 gene_map_protein_coding <- gene_map %>%
   filter(gene_biotype == "protein_coding")
 
-countData <- read_tsv("combined_at_14August2019.counts") %>%
+countData <- syn("syn21411551") %>%
+  read_tsv() %>%
   filter(id %in% gene_map_protein_coding$gene_id)
 
 dds <- DESeqDataSetFromMatrix(
@@ -48,6 +50,18 @@ dir.create("deseq_protein_coding", showWarnings = FALSE)
 write_rds(de, file.path("deseq_protein_coding", "deseq_pairwise.rds"))
 
 resultsNames(de)
+
+# Compare specifically two conditions of interest for QC of the ERKi
+# qc_res <- lfcShrink(de, contrast = c("condition_all", "time24dox1conc1000", "time24dox0conc250"), type = "ashr")
+qc_res <- results(de, contrast = c("condition_all", "time24dox1conc1000", "time24dox0conc250"))
+write_csv(
+  qc_res %>%
+    as.data.frame() %>%
+    rownames_to_column("gene_id") %>%
+    left_join(select(gene_map, gene_id, gene_name)),
+  file.path("deseq", paste0("deseq_erki_qc_comparison_time24dox1conc1000_vs_time24dox0conc250", ".csv.gz"))
+)
+
 
 plan(multisession(workers = 4))
 all_results <- resultsNames(de) %>%
